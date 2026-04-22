@@ -1,8 +1,9 @@
+const { startSession } = require('./orchestrator'); // Must use curly braces
 const express = require('express');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
-const { startSession } = require('./orchestrator');
+
 
 const app = express();
 const server = http.createServer(app);

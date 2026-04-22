@@ -6,7 +6,7 @@ const FormData = require('form-data');
 puppeteer.use(StealthPlugin());
 
 // --- CONFIGURATION VAULT ---
-const VAULT_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
+const VAULT_URL = "https://script.google.com/macros/s/AKfycbzjX20l3RNxx1adYeW_108CdbGJlO3vi2lwhdixZSBo_83oijJYtIAURqAg9ImZSGrZ/exec";
 let cachedCreds = null;
 
 const VIEWPORT_WIDTH = 1280;

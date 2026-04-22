@@ -1,50 +1,70 @@
 const express = require('express');
 const http = require('http');
-const path = require('path');
 const { Server } = require('socket.io');
-const { startSession } = require('./orchestrator');
+const { exec } = require('child_process');
+const { startSession } = require('./orchestra'); // Ensure path is correct
 
 const app = express();
 const server = http.createServer(app);
 
+// PRODUCTION CONFIG: 
+// Force WebSocket transport for Railway stability
 const io = new Server(server, {
-    cors: { origin: "*", methods: ["GET", "POST"] },
-    transports: ['websocket']
+    cors: { origin: "*" },
+    transports: ['websocket'],
+    allowEIO3: true
 });
 
-// RESOURCE CONTROL: Railway 512MB/1GB RAM cannot handle many browsers.
-let activeSessions = 0;
-const MAX_SESSIONS = 6; 
+// --- SCALING CONFIG ---
+const MAX_CONCURRENT_BROWSERS = 8; // Increased from 2 to handle traffic spikes
+let activeInstances = 0;
 
-app.get('/favicon.ico', (req, res) => res.status(204).end());
+/**
+ * THE REAPER: Every 15 minutes, force-kill any ghost Chrome processes 
+ * that didn't close properly to reclaim locked RAM.
+ */
+setInterval(() => {
+    exec('pkill -f "(chrome|chromium)"', (err) => {
+        if (!err) {
+            // Silently log only if you are monitoring the dashboard
+            // console.log('[REAPER] Memory Purged');
+        }
+    });
+}, 900000); 
 
-const frontendPath = path.resolve(process.cwd(), 'frontend');
-app.use(express.static(frontendPath));
+// --- STATIC ASSETS ---
+app.use(express.static('public'));
 
-app.get('/', (req, res) => {
-    res.sendFile(path.join(frontendPath, 'index.html'));
+app.get('/health', (req, res) => {
+    res.status(200).send('NODE_ACTIVE');
 });
 
+// --- SOCKET HANDLER ---
 io.on('connection', (socket) => {
-    if (activeSessions >= MAX_SESSIONS) {
-        console.log("[REJECTED] Memory Safeguard: Max browser instances reached.");
-        socket.emit('error', 'Server busy. Try again in a minute.');
-        socket.disconnect();
+    // Memory Safeguard
+    if (activeInstances >= MAX_CONCURRENT_BROWSERS) {
+        // console.log('[REJECTED] Capacity Reached');
+        socket.emit('error', 'SERVER_BUSY');
+        socket.disconnect(true);
         return;
     }
 
-    activeSessions++;
-    console.log(`[WS] Connected: ${socket.id} | Active Browsers: ${activeSessions}`);
-    
-    startSession(io, socket);
+    activeInstances++;
+    // console.log(`[WS] New Client: ${socket.id} | Active: ${activeInstances}`);
+
+    // Delegate session logic to orchestra.js
+    startSession(io, socket).catch(() => {
+        activeInstances = Math.max(0, activeInstances - 1);
+    });
 
     socket.on('disconnect', () => {
-        activeSessions--;
-        console.log(`[WS] Disconnected: ${socket.id} | Remaining: ${activeSessions}`);
+        activeInstances = Math.max(0, activeInstances - 1);
+        // console.log(`[WS] Client Exit. Remaining: ${activeInstances}`);
     });
 });
 
+// --- START SERVER ---
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[SYSTEM] Server listening on port ${PORT}`);
+server.listen(PORT, () => {
+    // console.log(`[SYSTEM] Production Node Listening on ${PORT}`);
 });

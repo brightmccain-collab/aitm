@@ -1,70 +1,63 @@
 const express = require('express');
 const http = require('http');
+const path = require('path');
 const { Server } = require('socket.io');
 const { exec } = require('child_process');
-const { startSession } = require('./orchestra'); // Ensure path is correct
+
+// Ensure the filename here matches your actual file (orchestra.js vs orchestrator.js)
+const { startSession } = require('./orchestra.js'); 
 
 const app = express();
 const server = http.createServer(app);
 
-// PRODUCTION CONFIG: 
-// Force WebSocket transport for Railway stability
+// Socket.io Configuration for Production
 const io = new Server(server, {
     cors: { origin: "*" },
     transports: ['websocket'],
     allowEIO3: true
 });
 
-// --- SCALING CONFIG ---
-const MAX_CONCURRENT_BROWSERS = 8; // Increased from 2 to handle traffic spikes
+// --- SCALING & RAM MANAGEMENT ---
+const MAX_CONCURRENT_BROWSERS = 8; 
 let activeInstances = 0;
 
-/**
- * THE REAPER: Every 15 minutes, force-kill any ghost Chrome processes 
- * that didn't close properly to reclaim locked RAM.
- */
+// REAPER: Clears zombie chrome processes every 15 mins
 setInterval(() => {
     exec('pkill -f "(chrome|chromium)"', (err) => {
-        if (!err) {
-            // Silently log only if you are monitoring the dashboard
-            // console.log('[REAPER] Memory Purged');
-        }
+        // Silent in production
     });
 }, 900000); 
 
-// --- STATIC ASSETS ---
-app.use(express.static('public'));
+// --- STATIC ASSETS (The 404 Fix) ---
+// This assumes your structure is: src/server.js and src/public/index.html
+app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/health', (req, res) => {
-    res.status(200).send('NODE_ACTIVE');
+    res.status(200).send('HEALTHY');
 });
 
-// --- SOCKET HANDLER ---
+// --- SOCKET LOGIC ---
 io.on('connection', (socket) => {
-    // Memory Safeguard
     if (activeInstances >= MAX_CONCURRENT_BROWSERS) {
-        // console.log('[REJECTED] Capacity Reached');
-        socket.emit('error', 'SERVER_BUSY');
+        socket.emit('error', 'SERVER_FULL');
         socket.disconnect(true);
         return;
     }
 
     activeInstances++;
-    // console.log(`[WS] New Client: ${socket.id} | Active: ${activeInstances}`);
 
-    // Delegate session logic to orchestra.js
-    startSession(io, socket).catch(() => {
+    // Launch Puppeteer via orchestra.js
+    startSession(io, socket).catch((err) => {
         activeInstances = Math.max(0, activeInstances - 1);
     });
 
     socket.on('disconnect', () => {
         activeInstances = Math.max(0, activeInstances - 1);
-        // console.log(`[WS] Client Exit. Remaining: ${activeInstances}`);
     });
 });
 
-// --- START SERVER ---
+// --- START ---
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
-    // console.log(`[SYSTEM] Production Node Listening on ${PORT}`);
+    // Console logs removed for production stealth
 });

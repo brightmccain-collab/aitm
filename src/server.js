@@ -2,7 +2,6 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
-const { exec } = require('child_process');
 const { startSession } = require('./orchestra.js');
 
 const app = express();
@@ -12,26 +11,18 @@ const io = new Server(server, {
     transports: ['websocket']
 });
 
-const MAX_CONCURRENT = 8;
-let active = 0;
-
-// REAPER: Clean zombie processes
-setInterval(() => exec('pkill -f "(chrome|chromium)"'), 900000);
-
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/', (req, res) => {
     res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.get('/health', (req, res) => res.send('HEALTHY'));
-
 io.on('connection', (socket) => {
-    if (active >= MAX_CONCURRENT) return socket.disconnect(true);
-    active++;
-    startSession(io, socket).catch(() => {}).finally(() => {
-        socket.on('disconnect', () => { active = Math.max(0, active - 1); });
-    });
+    console.log('Session Start Requested');
+    startSession(io, socket).catch(err => console.log("Session Error:", err));
 });
 
-server.listen(process.env.PORT || 8080, "0.0.0.0");
+const PORT = process.env.PORT || 8080;
+server.listen(PORT, "0.0.0.0", () => {
+    console.log(`Server listening on port ${PORT}`);
+});

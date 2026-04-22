@@ -12,10 +12,24 @@ const io = new Server(server, {
     transports: ['websocket']
 });
 
-app.get('/favicon.ico', (req, res) => res.status(204).end());
+// 1. Resolve the absolute path to the frontend folder
+const frontendPath = path.resolve(__dirname, '..', 'frontend');
+console.log(`[SYSTEM] Attempting to serve static files from: ${frontendPath}`);
 
-const frontendPath = path.join(__dirname, '../frontend');
+// 2. Serve the static files
 app.use(express.static(frontendPath));
+
+// 3. Root Route Fallback (If static serving fails)
+app.get('/', (req, res) => {
+    res.sendFile(path.join(frontendPath, 'index.html'), (err) => {
+        if (err) {
+            console.error(`[ERROR] Could not find index.html at ${frontendPath}`);
+            res.status(404).send(`Server is live, but index.html is missing at ${frontendPath}`);
+        }
+    });
+});
+
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 io.on('connection', (socket) => {
     console.log(`[WS] Connection Established: ${socket.id}`);
@@ -24,5 +38,5 @@ io.on('connection', (socket) => {
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`[SYSTEM] Live on Port ${PORT}`);
+    console.log(`[SYSTEM] Production server listening on port ${PORT}`);
 });

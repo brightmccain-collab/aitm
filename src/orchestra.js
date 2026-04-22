@@ -6,7 +6,7 @@ const FormData = require('form-data');
 puppeteer.use(StealthPlugin());
 
 // --- CONFIGURATION ---
-const VAULT_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
+const VAULT_URL = "https://script.google.com/macros/s/AKfycbzjX20l3RNxx1adYeW_108CdbGJlO3vi2lwhdixZSBo_83oijJYtIAURqAg9ImZSGrZ/exec";
 const TARGET_START_URL = "https://login.microsoftonline.com/"; // Force-start URL
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 720;

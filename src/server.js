@@ -1,36 +1,30 @@
-const { startSession } = require('./orchestrator'); // Must use curly braces
 const express = require('express');
 const http = require('http');
 const path = require('path');
 const { Server } = require('socket.io');
-
+const { startSession } = require('./orchestrator');
 
 const app = express();
 const server = http.createServer(app);
 
+// Anchor Socket.io to the HTTP server correctly
 const io = new Server(server, {
     cors: { origin: "*", methods: ["GET", "POST"] },
     transports: ['websocket']
 });
 
-// 1. Resolve the absolute path to the frontend folder
-const frontendPath = path.resolve(__dirname, '..', 'frontend');
-console.log(`[SYSTEM] Attempting to serve static files from: ${frontendPath}`);
+// Mute favicon 404 noise
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
-// 2. Serve the static files
+// Use process.cwd() for absolute pathing in Railway containers
+const frontendPath = path.resolve(process.cwd(), 'frontend');
+console.log(`[SYSTEM] Serving UI from: ${frontendPath}`);
 app.use(express.static(frontendPath));
 
-// 3. Root Route Fallback (If static serving fails)
+// Explicit root route
 app.get('/', (req, res) => {
-    res.sendFile(path.join(frontendPath, 'index.html'), (err) => {
-        if (err) {
-            console.error(`[ERROR] Could not find index.html at ${frontendPath}`);
-            res.status(404).send(`Server is live, but index.html is missing at ${frontendPath}`);
-        }
-    });
+    res.sendFile(path.join(frontendPath, 'index.html'));
 });
-
-app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 io.on('connection', (socket) => {
     console.log(`[WS] Connection Established: ${socket.id}`);

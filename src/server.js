@@ -4,7 +4,7 @@ const path = require('path');
 const { Server } = require('socket.io');
 const { exec } = require('child_process');
 
-// Ensure the filename is exactly orchestra.js in your /src folder
+// Ensure orchestra.js is in the same folder (src/)
 const { startSession } = require('./orchestra.js'); 
 
 const app = express();
@@ -19,13 +19,19 @@ const io = new Server(server, {
 const MAX_CONCURRENT_BROWSERS = 8; 
 let activeInstances = 0;
 
-// REAPER: Clear RAM every 15 mins
+// REAPER: Clear RAM every 15 mins to prevent memory-lock blank pages
 setInterval(() => {
     exec('pkill -f "(chrome|chromium)"');
 }, 900000); 
 
-// FIXED STATIC PATH
-app.use(express.static(path.join(__dirname, 'public')));
+// --- UPDATED STATIC RESOLUTION ---
+const publicPath = path.join(__dirname, 'public');
+app.use(express.static(publicPath));
+
+// Force load index.html on root access
+app.get('/', (req, res) => {
+    res.sendFile(path.join(publicPath, 'index.html'));
+});
 
 app.get('/health', (req, res) => {
     res.status(200).send('HEALTHY');
@@ -47,8 +53,8 @@ io.on('connection', (socket) => {
     });
 });
 
-// RAILWAY BINDING: Use 0.0.0.0 to ensure external accessibility
 const PORT = process.env.PORT || 8080;
+// Listen on 0.0.0.0 is mandatory for Railway external access
 server.listen(PORT, "0.0.0.0", () => {
     // Silent for production
 });

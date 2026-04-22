@@ -14,7 +14,7 @@ const io = new Server(server, {
 
 // RESOURCE CONTROL: Railway 512MB/1GB RAM cannot handle many browsers.
 let activeSessions = 0;
-const MAX_SESSIONS = 2; 
+const MAX_SESSIONS = 6; 
 
 app.get('/favicon.ico', (req, res) => res.status(204).end());
 

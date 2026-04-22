@@ -1,21 +1,17 @@
 {
-  "name": "aitm-production-lab",
-  "version": "1.4.0",
-  "description": "Production scale automated portal",
+  "name": "aitm-stable-revert",
+  "version": "1.0.0",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js"
   },
   "dependencies": {
-    "puppeteer-core": "^22.6.0",
+    "puppeteer": "^22.6.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "express": "^4.19.2",
     "socket.io": "^4.7.5",
     "axios": "^1.6.8",
     "form-data": "^4.0.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   }
 }

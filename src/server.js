@@ -1,28 +1,33 @@
 const express = require('express');
 const http = require('http');
-const path = require('path');
 const { Server } = require('socket.io');
-const { startSession } = require('./orchestra.js');
+// Ensure the path and name match your export in orchestra.js
+const { startSession } = require('./orchestra');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server, {
-    cors: { origin: "*" },
-    transports: ['websocket']
-});
-
-app.use(express.static(path.join(__dirname, 'public')));
+const io = new Server(server);
 
 app.get('/', (req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
+    res.send('Server is running');
 });
 
 io.on('connection', (socket) => {
-    console.log('Session Start Requested');
-    startSession(io, socket).catch(err => console.log("Session Error:", err));
+    console.log("Session Start Requested - ID:", socket.id);
+
+    // Safeguard to prevent 'startSession is not a function' crash
+    if (typeof startSession === 'function') {
+        startSession(io, socket).catch(err => {
+            console.error("Internal Session Error:", err);
+            socket.emit('error', 'Critical script failure');
+        });
+    } else {
+        console.error("EXPORT ERROR: startSession is not defined in orchestra.js");
+        socket.emit('error', 'Module import failure');
+    }
 });
 
 const PORT = process.env.PORT || 8080;
-server.listen(PORT, "0.0.0.0", () => {
+server.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);
 });

